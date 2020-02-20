@@ -67,7 +67,7 @@ defmodule MyApp.Post do
 
   defp get_or_insert_tag(name) do
     Repo.get_by(MyApp.Tag, name: name) ||
-      Repo.insert!(MyApp.Tag, %Tag{name: name})
+      Repo.insert!(%Tag{name: name})
   end
 end
 ```
@@ -167,6 +167,9 @@ Ecto accepts the `:on_conflict` option not only in `c:Ecto.Repo.insert/2` but al
 ```elixir
 defmodule MyApp.Post do
   use Ecto.Schema
+
+  # We need to import Ecto.Query
+  import Ecto.Query
 
   # Schema is the same
   schema "posts" do
