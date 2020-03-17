@@ -40,6 +40,31 @@ defmodule Ecto.Query.BuilderTest do
            |> elem(0)
   end
 
+  test "escape json_extract_path" do
+    expected = {Macro.escape(quote do: json_extract_path(&0.y(), ["a", "b"])), []}
+    actual = escape(quote do json_extract_path(x.y, ["a", "b"]) end, [x: 0], __ENV__)
+    assert actual == expected
+
+    actual = escape(quote do x.y["a"]["b"] end, [x: 0], __ENV__)
+    assert actual == expected
+
+    expected = {Macro.escape(quote do: json_extract_path(&0.y(), ["a", 0])), []}
+    actual = escape(quote do x.y["a"][0] end, [x: 0], __ENV__)
+    assert actual == expected
+
+    expected = {Macro.escape(quote do: json_extract_path(&0.y(), [0, "a"])), []}
+    actual = escape(quote do x.y[0]["a"] end, [x: 0], __ENV__)
+    assert actual == expected
+
+    assert_raise Ecto.Query.CompileError, ~r/expected JSON path to contain literal strings.*got: `a`/, fn ->
+      escape(quote do x.y[a] end, [x: 0], __ENV__)
+    end
+
+    assert_raise Ecto.Query.CompileError, "expected JSON path to be compile-time list, got: `bad`", fn ->
+      escape(quote do json_extract_path(x.y, bad) end, [x: 0], __ENV__)
+    end
+  end
+
   test "escape fragments" do
     assert {Macro.escape(quote do fragment({:raw, "date_add("}, {:expr, &0.created_at()},
                                            {:raw, ", "}, {:expr, ^0}, {:raw, ")"}) end), [{0, :any}]} ==
@@ -185,8 +210,8 @@ defmodule Ecto.Query.BuilderTest do
       escape(quote(do: x.y == 1), [], __ENV__)
     end
 
-    assert_raise Ecto.Query.CompileError, ~r"expected literal atom or interpolated value", fn ->
-      escape(quote(do: field(x, 123)), [x: 0], __ENV__) |> elem(0) |> Code.eval_quoted([], __ENV__)
+    assert_raise Ecto.Query.CompileError, ~r"expected literal atom or interpolated value.*got: `var`", fn ->
+      escape(quote(do: field(x, var)), [x: 0], __ENV__) |> elem(0) |> Code.eval_quoted([], __ENV__)
     end
 
     assert_raise Ecto.Query.CompileError,
