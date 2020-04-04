@@ -220,6 +220,35 @@ defmodule Ecto.RepoTest do
     end
   end
 
+  defmodule DefaultOptionRepo do
+    use Ecto.Repo, otp_app: :ecto, adapter: Ecto.TestAdapter
+
+    def default_options(:all), do: [prefix: "all_schema"]
+    def default_options(:update_all), do: [prefix: "update_all_schema"]
+    def default_options(_), do: [prefix: "fallback_schema"]
+  end
+
+  describe "default_options" do
+    test "passes a default option for operation" do
+      {:ok, _pid} = DefaultOptionRepo.start_link(url: "ecto://user:pass@local/hello")
+      DefaultOptionRepo.all(MySchema)
+      assert_received {:all, query}
+      assert query.prefix == "all_schema"
+
+      DefaultOptionRepo.all(MySchema, prefix: "overridden_schema")
+      assert_received {:all, query}
+      assert query.prefix == "overridden_schema"
+
+      DefaultOptionRepo.update_all(MySchema, set: [x: "foo"])
+      assert_received {:update_all, query}
+      assert query.prefix == "update_all_schema"
+
+      DefaultOptionRepo.delete_all(MySchema)
+      assert_received {:delete_all, query}
+      assert query.prefix == "fallback_schema"
+    end
+  end
+
   describe "aggregate" do
     test "aggregates on the given field" do
       TestRepo.aggregate(MySchema, :min, :id)

@@ -89,6 +89,8 @@ defmodule Ecto.Repo do
     * `:log` - When false, does not log the query
     * `:telemetry_event` - The telemetry event name to dispatch the event under.
       See the next section for more information
+    * `:telemetry_options` - Extra options to attach to telemetry event name.
+      See the next section for more information
 
   ### Telemetry events
 
@@ -112,8 +114,8 @@ defmodule Ecto.Repo do
 
   For details, see [the telemetry documentation](https://hexdocs.pm/telemetry/).
 
-  Below we list all events developers should expect from Ecto. All examples below consider
-  a repository named `MyApp.Repo`:
+  Below we list all events developers should expect from Ecto. All examples
+  below consider a repository named `MyApp.Repo`:
 
   #### `[:my_app, :repo, :query]`
 
@@ -132,8 +134,19 @@ defmodule Ecto.Repo do
   All measurements are given in the `:native` time unit. You can read more
   about it in the docs for `System.convert_time_unit/3`.
 
-  A `:metadata` map is also sent, including parameters, source, the query
-  string, the repo it was run by, and the query result.
+  A telemetry `:metadata` map including the following fields. Each database
+  adapter may emit different information here. For Ecto.SQL databases, it
+  will look like this:
+
+    * `:type` - the type of the Ecto query. For example, for Ecto.SQL
+      databases, it would be `:ecto_sql_query`
+    * `:repo` - the Ecto repository
+    * `:result` - the query result
+    * `:params` - the query parameters
+    * `:query` - the query sent to the database as a string
+    * `:source` - the source the query was made on (may be nil)
+    * `:options` - extra options given to the repo operation under
+      `:telemetry_options`
 
   ## Read-only repositories
 
@@ -198,7 +211,7 @@ defmodule Ecto.Repo do
         adapter.checkout(meta, opts, fun)
       end
 
-      @compile {:inline, get_dynamic_repo: 0}
+      @compile {:inline, get_dynamic_repo: 0, with_default_options: 2}
 
       def get_dynamic_repo() do
         Process.get({__MODULE__, :dynamic_repo}, @default_dynamic_repo)
@@ -208,11 +221,18 @@ defmodule Ecto.Repo do
         Process.put({__MODULE__, :dynamic_repo}, dynamic) || @default_dynamic_repo
       end
 
+      def default_options(_operation), do: []
+      defoverridable default_options: 1
+
+      defp with_default_options(operation_name, opts) do
+        Keyword.merge(default_options(operation_name), opts)
+      end
+
       ## Transactions
 
       if Ecto.Adapter.Transaction in behaviours do
         def transaction(fun_or_multi, opts \\ []) do
-          Ecto.Repo.Transaction.transaction(__MODULE__, get_dynamic_repo(), fun_or_multi, opts)
+          Ecto.Repo.Transaction.transaction(__MODULE__, get_dynamic_repo(), fun_or_multi, with_default_options(:transaction, opts))
         end
 
         def in_transaction? do
@@ -229,39 +249,39 @@ defmodule Ecto.Repo do
 
       if Ecto.Adapter.Schema in behaviours and not @read_only do
         def insert(struct, opts \\ []) do
-          Ecto.Repo.Schema.insert(__MODULE__, get_dynamic_repo(), struct, opts)
+          Ecto.Repo.Schema.insert(__MODULE__, get_dynamic_repo(), struct, with_default_options(:insert, opts))
         end
 
         def update(struct, opts \\ []) do
-          Ecto.Repo.Schema.update(__MODULE__, get_dynamic_repo(), struct, opts)
+          Ecto.Repo.Schema.update(__MODULE__, get_dynamic_repo(), struct, with_default_options(:update, opts))
         end
 
         def insert_or_update(changeset, opts \\ []) do
-          Ecto.Repo.Schema.insert_or_update(__MODULE__, get_dynamic_repo(), changeset, opts)
+          Ecto.Repo.Schema.insert_or_update(__MODULE__, get_dynamic_repo(), changeset, with_default_options(:insert_or_update, opts))
         end
 
         def delete(struct, opts \\ []) do
-          Ecto.Repo.Schema.delete(__MODULE__, get_dynamic_repo(), struct, opts)
+          Ecto.Repo.Schema.delete(__MODULE__, get_dynamic_repo(), struct, with_default_options(:delete, opts))
         end
 
         def insert!(struct, opts \\ []) do
-          Ecto.Repo.Schema.insert!(__MODULE__, get_dynamic_repo(), struct, opts)
+          Ecto.Repo.Schema.insert!(__MODULE__, get_dynamic_repo(), struct, with_default_options(:insert, opts))
         end
 
         def update!(struct, opts \\ []) do
-          Ecto.Repo.Schema.update!(__MODULE__, get_dynamic_repo(), struct, opts)
+          Ecto.Repo.Schema.update!(__MODULE__, get_dynamic_repo(), struct, with_default_options(:update, opts))
         end
 
         def insert_or_update!(changeset, opts \\ []) do
-          Ecto.Repo.Schema.insert_or_update!(__MODULE__, get_dynamic_repo(), changeset, opts)
+          Ecto.Repo.Schema.insert_or_update!(__MODULE__, get_dynamic_repo(), changeset, with_default_options(:insert_or_update, opts))
         end
 
         def delete!(struct, opts \\ []) do
-          Ecto.Repo.Schema.delete!(__MODULE__, get_dynamic_repo(), struct, opts)
+          Ecto.Repo.Schema.delete!(__MODULE__, get_dynamic_repo(), struct, with_default_options(:delete, opts))
         end
 
         def insert_all(schema_or_source, entries, opts \\ []) do
-          Ecto.Repo.Schema.insert_all(__MODULE__, get_dynamic_repo(), schema_or_source, entries, opts)
+          Ecto.Repo.Schema.insert_all(__MODULE__, get_dynamic_repo(), schema_or_source, entries, with_default_options(:insert_all, opts))
         end
       end
 
@@ -846,6 +866,22 @@ defmodule Ecto.Repo do
             when operation: :all | :update_all | :delete_all | :stream
 
   @doc """
+  A user customizable callback invoked to retrieve default options
+  for operations.
+
+  This can be used to provide default values per operation that
+  have higher precedence than the values given on configuration
+  or when starting the repository. It can also be used to set
+  query specific options, such as `:prefix`.
+
+  This callback is invoked as the entry point for all repository
+  operations.
+  """
+  @callback default_options(operation) :: Keyword.t()
+            when operation: :all | :insert_all | :update_all | :delete_all | :stream |
+                              :transaction | :insert | :update | :delete | :insert_or_update
+
+  @doc """
   Fetches all entries from the data store matching the given query.
 
   May raise `Ecto.QueryError` if query validation fails.
@@ -1034,10 +1070,9 @@ defmodule Ecto.Repo do
     * `:conflict_target` - A list of column names to verify for conflicts.
       It is expected those columns to have unique indexes on them that may conflict.
       If none is specified, the conflict target is left up to the database.
-      It may also be `{:constraint, constraint_name_as_atom}` in databases
-      that support the "ON CONSTRAINT" expression, such as PostgreSQL, or
-      `{:unsafe_fragment, binary_fragment}` to pass any expression to the
-      database without any sanitization, such as
+      It may also be `{:unsafe_fragment, binary_fragment}` to pass any
+      expression to the database without any sanitization, this is useful
+      for partial index or index with expressions, such as
       `ON CONFLICT (coalesce(firstname, ""), coalesce(lastname, ""))`.
 
   See the "Shared options" section at the module documentation for
@@ -1126,10 +1161,9 @@ defmodule Ecto.Repo do
     * `:conflict_target` - A list of column names to verify for conflicts.
       It is expected those columns to have unique indexes on them that may conflict.
       If none is specified, the conflict target is left up to the database.
-      It may also be `{:constraint, constraint_name_as_atom}` in databases
-      that support the "ON CONSTRAINT" expression, such as PostgreSQL, or
-      `{:unsafe_fragment, binary_fragment}` to pass any expression to the
-      database without any sanitization, such as
+      It may also be `{:unsafe_fragment, binary_fragment}` to pass any
+      expression to the database without any sanitization, this is useful
+      for partial index or index with expressions, such as
       `ON CONFLICT (coalesce(firstname, ""), coalesce(lastname, ""))`.
     * `:stale_error_field` - The field where stale errors will be added in
       the returning changeset. This option can be used to avoid raising

@@ -2216,17 +2216,24 @@ defmodule Ecto.Changeset do
   """
   @spec validate_acceptance(t, atom, Keyword.t) :: t
   def validate_acceptance(changeset, field, opts \\ [])
-  def validate_acceptance(%{params: params} = changeset, field, opts) when is_map(params) do
+  def validate_acceptance(%{params: params} = changeset, field, opts) do
+    errors = validate_acceptance_errors(params, field, opts)
+
+    %{changeset | validations: [{field, {:acceptance, opts}} | changeset.validations],
+                  errors: errors ++ changeset.errors,
+                  valid?: changeset.valid? and errors == []}
+  end
+
+  defp validate_acceptance_errors(nil, _field, _opts), do: []
+
+  defp validate_acceptance_errors(params, field, opts) do
     param = Atom.to_string(field)
     value = Map.get(params, param)
 
     case Ecto.Type.cast(:boolean, value) do
-      {:ok, true} -> changeset
-      _ -> add_error(changeset, field, message(opts, "must be accepted"), validation: :acceptance)
+      {:ok, true} -> []
+      _ -> [{field, {message(opts, "must be accepted"), validation: :acceptance}}]
     end
-  end
-  def validate_acceptance(%{params: nil} = changeset, _, _) do
-    changeset
   end
 
   ## Optimistic lock
@@ -2763,6 +2770,8 @@ defmodule Ecto.Changeset do
     do: source
   defp get_source(%{data: data}), do:
     raise ArgumentError, "cannot add constraint to changeset because it does not have a source, got: #{inspect data}"
+  defp get_source(item), do:
+    raise ArgumentError, "cannot add constraint because a changeset was not supplied, got: #{inspect item}"
 
   defp get_assoc(%{types: types}, assoc) do
     case Map.fetch(types, assoc) do
@@ -2811,7 +2820,7 @@ defmodule Ecto.Changeset do
   validations rules from `changeset.validations` to build detailed error
   description.
   """
-  @spec traverse_errors(t, (error -> String.t) | (Changeset.t, atom, error -> String.t)) :: %{atom => [String.t]}
+  @spec traverse_errors(t, (error -> String.t) | (Changeset.t, atom, error -> String.t)) :: %{atom => [String.t | map]}
   def traverse_errors(%Changeset{errors: errors, changes: changes, types: types} = changeset, msg_func)
       when is_function(msg_func, 1) or is_function(msg_func, 3) do
     errors
