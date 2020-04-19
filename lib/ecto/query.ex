@@ -216,14 +216,26 @@ defmodule Ecto.Query do
       from [p, comment: c] in posts_with_comments, select: {p.title, c.body}
 
   This approach lets us not worry about keeping track of the position
-  of the bindings when composing the query.
-
-  What's more, a name can be assigned to the first binding as well:
+  of the bindings when composing the query. The `:as` option can be
+  given both on joins and on `from`:
 
       from p in Post, as: :post
 
   Only atoms are accepted for binding names. Named binding references
   are expected to be placed in the tail position of the bindings list.
+
+  Named bindings can also be use for late binding when use with the
+  `as/1` construct, allowing you to refer to a binding that has not
+  been defined yet:
+
+      from c in Comment, where: as(:posts).id == c.post_id
+
+  This is especially useful when working with subqueries, where you
+  may need to refer to a parent binding with `parent_as`, which is
+  not known when writing the subquery:
+
+      child_query = from c in Comment, where: parent_as(:posts).id == c.post_id
+      from p in Post, as: :posts, join: c in subquery(child_query)
 
   ### Bindingless operations
 
@@ -1104,7 +1116,7 @@ defmodule Ecto.Query do
 
   Keyword syntax is not supported for this feature.
 
-  ## Limitation: CTEs on schemas wth source fields
+  ## Limitation: CTEs on schemas with source fields
 
   Ecto allows developers to say that a table in their Ecto schema
   map to a different column in their database:

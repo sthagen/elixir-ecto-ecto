@@ -61,20 +61,18 @@ defmodule Ecto.Query.Builder do
   with `^index` in the query where index is a number indexing into the
   map.
   """
-  @spec escape(Macro.t, quoted_type, {list, term}, Keyword.t,
-               Macro.Env.t | {Macro.Env.t, fun}) :: {Macro.t, {list, term}}
+  @spec escape(Macro.t, quoted_type | {:in, quoted_type} | {:out, quoted_type}, {list, term},
+               Keyword.t, Macro.Env.t | {Macro.Env.t, fun}) :: {Macro.t, {list, term}}
   def escape(expr, type, params_acc, vars, env)
 
   # var.x - where var is bound
-  def escape({{:., _, [{var, _, context}, field]}, _, []}, _type, params_acc, vars, _env)
-      when is_atom(var) and is_atom(context) and is_atom(field) do
-    {escape_field!(var, field, vars), params_acc}
+  def escape({{:., _, [callee, field]}, _, []}, _type, params_acc, vars, _env) when is_atom(field) do
+    {escape_field!(callee, field, vars), params_acc}
   end
 
   # field macro
-  def escape({:field, _, [{var, _, context}, field]}, _type, params_acc, vars, _env)
-      when is_atom(var) and is_atom(context) do
-    {escape_field!(var, field, vars), params_acc}
+  def escape({:field, _, [callee, field]}, _type, params_acc, vars, _env) do
+    {escape_field!(callee, field, vars), params_acc}
   end
 
   # param interpolation
@@ -108,10 +106,6 @@ defmodule Ecto.Query.Builder do
 
   def escape({:type, _, [{fun, _, [_ | _]} = expr, type]}, _type, params_acc, vars, env)
       when fun in ~w(fragment avg count max min sum over filter)a do
-    escape_with_type(expr, type, params_acc, vars, env)
-  end
-
-  def escape({:type, _, [{{:., _, [Access, :get]}, _, _} = expr, type]}, _type, params_acc, vars, env) do
     escape_with_type(expr, type, params_acc, vars, env)
   end
 
@@ -546,11 +540,30 @@ defmodule Ecto.Query.Builder do
     {expr, params_acc}
   end
 
-  defp escape_field!(var, field, vars) do
+  defp escape_field!({var, _, context}, field, vars)
+       when is_atom(var) and is_atom(context) do
     var   = escape_var!(var, vars)
     field = quoted_field!(field)
     dot   = {:{}, [], [:., [], [var, field]]}
     {:{}, [], [dot, [], []]}
+  end
+
+  defp escape_field!({kind, _, [atom]}, field, _vars)
+       when kind in [:as, :parent_as] and is_atom(atom) do
+    as    = {:{}, [], [kind, [], [atom]]}
+    field = quoted_field!(field)
+    dot   = {:{}, [], [:., [], [as, field]]}
+    {:{}, [], [dot, [], []]}
+  end
+
+  defp escape_field!(expr, field, _vars) do
+    error!("""
+    cannot fetch field `#{field}` from `#{Macro.to_string(expr)}`. Can only fetch fields from:
+
+      * sources, such as `p` in `from p in Post`
+      * named bindings, such as `as(:post)` in `from Post, as: :post`
+      * parent named bindings, such as `parent_as(:post)` in a subquery
+    """)
   end
 
   defp escape_interval(count, interval, params_acc, vars, env) do

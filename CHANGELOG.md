@@ -1,5 +1,38 @@
 # Changelog for v3.x
 
+## v3.4.3-dev (2020-04-19)
+
+### Enhancements
+
+  * [Ecto.Query] Support `as/1` and `parent_as/1` for lazy named bindings and to allow parent references from subqueries
+
+### Bug fixes
+
+  * [Ecto.Query] Do not raise for missing assocs if :force is given to preload
+  * [Ecto.Repo] Return error from `Repo.delete` on invalid changeset from `prepare_changeset`
+
+## v3.4.2 (2020-04-10)
+
+### Enhancements
+
+  * [Ecto.Changeset] Support multiple fields in `unique_constraint/3`
+
+## v3.4.1 (2020-04-08)
+
+### Enhancements
+
+  * [Ecto] Add `Ecto.embedded_load/3` and `Ecto.embedded_dump/2`
+  * [Ecto.Query] Improve error message on invalid JSON expressions
+  * [Ecto.Repo] Emit `[:ecto, :repo, :init]` telemetry event upon Repo init
+
+### Bug fixes
+
+  * [Ecto.Query] Do not support JSON selectors on `type/2`
+
+### Deprecations
+
+  * [Ecto.Repo] Deprecate `conflict_target: {:constraint, _}`. It is a discouraged approach and `{:unsafe_fragment, _}` is still available if someone definitely needs it
+
 ## v3.4.0 (2020-03-24)
 
 ### Enhancements

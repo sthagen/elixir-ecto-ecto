@@ -104,7 +104,7 @@ defmodule Ecto.Type do
 
   @type composite :: {:array, t} | {:map, t} | private_composite
 
-  @typep private_composite :: {:maybe, t} | {:embed, Ecto.Embedded.t} | {:in, t}
+  @typep private_composite :: {:maybe, t} | {:embed, Ecto.Embedded.t} | {:in, t} | {:param, :any_datetime}
 
   @base ~w(
     integer float decimal boolean string map binary id binary_id any
@@ -248,6 +248,10 @@ defmodule Ecto.Type do
       {:ok, Decimal.new("1")}
 
   """
+  def embedded_dump({:embed, _} = type, value, format) do
+    dump(type, value, &embedded_dump(&1, &2, format))
+  end
+
   def embedded_dump(type, value, format) do
     case embed_as(type, format) do
       :self -> {:ok, value}
@@ -264,6 +268,10 @@ defmodule Ecto.Type do
       {:ok, Decimal.new("1")}
 
   """
+  def embedded_load({:embed, _} = type, value, format) do
+    load(type, value, &embedded_load(&1, &2, format))
+  end
+
   def embedded_load(type, value, format) do
     case embed_as(type, format) do
       :self ->
@@ -512,17 +520,7 @@ defmodule Ecto.Type do
   end
 
   defp dump_embed(_field, schema, %{__struct__: schema} = struct, types, dumper) do
-    Enum.reduce(types, %{}, fn {field, {source, type}}, acc ->
-      value = Map.get(struct, field)
-
-      case dumper.(type, value) do
-        {:ok, value} ->
-          Map.put(acc, source, value)
-        :error ->
-          raise ArgumentError, "cannot dump `#{inspect value}` as type #{inspect type} " <>
-                               "for field `#{field}` in schema #{inspect schema}"
-      end
-    end)
+    Ecto.Schema.Loader.safe_dump(struct, types, dumper)
   end
 
   defp dump_embed(field, _schema, value, _types, _fun) do
@@ -1058,10 +1056,7 @@ defmodule Ecto.Type do
   defp cast_naive_datetime(%{} = map) do
     with {:ok, %Date{} = date} <- cast_date(map),
          {:ok, %Time{} = time} <- cast_time(map) do
-      case NaiveDateTime.new(date, time) do
-        {:ok, _} = ok -> ok
-        {:error, _} -> :error
-      end
+      NaiveDateTime.new(date, time)
     else
       _ -> :error
     end

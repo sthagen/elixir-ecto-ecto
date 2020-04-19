@@ -409,15 +409,6 @@ defmodule Ecto.Query.PlannerTest do
     assert key == :nocache
   end
 
-  test "plan: ctes with uncacheable queries are uncacheable" do
-    {_, _, cache} =
-      Comment
-      |> with_cte("cte", as: ^from(c in Comment, where: c.id in ^[1, 2, 3]))
-      |> plan()
-
-    assert cache == :nocache
-  end
-
   test "plan: normalizes prefixes" do
     # No schema prefix in from
     {query, _, _} = from(Comment, select: 1) |> plan()
@@ -438,31 +429,6 @@ defmodule Ecto.Query.PlannerTest do
 
     {query, _, _} = from(Post, prefix: "local", select: 1) |> Map.put(:prefix, "global") |> plan()
     assert query.sources == {{"posts", Post, "local"}}
-
-    # Subquery in from
-    {query, _, _} = from(subquery(Comment), select: 1) |> plan()
-    assert {%{query: %{sources: {{"comments", Comment, nil}}}}} = query.sources
-
-    {query, _, _} = from(subquery(Comment), select: 1) |> Map.put(:prefix, "global") |> plan()
-    assert {%{query: %{sources: {{"comments", Comment, "global"}}}}} = query.sources
-
-    {query, _, _} = from(subquery(Comment, prefix: "sub"), select: 1) |> Map.put(:prefix, "global") |> plan()
-    assert {%{query: %{sources: {{"comments", Comment, "sub"}}}}} = query.sources
-
-    {query, _, _} = from(subquery(Comment, prefix: "sub"), prefix: "local", select: 1) |> Map.put(:prefix, "global") |> plan()
-    assert {%{query: %{sources: {{"comments", Comment, "local"}}}}} = query.sources
-
-    {query, _, _} = from(subquery(Post), select: 1) |> plan()
-    assert {%{query: %{sources: {{"posts", Post, "my_prefix"}}}}} = query.sources
-
-    {query, _, _} = from(subquery(Post), select: 1) |> Map.put(:prefix, "global") |> plan()
-    assert {%{query: %{sources: {{"posts", Post, "my_prefix"}}}}} = query.sources
-
-    {query, _, _} = from(subquery(Post, prefix: "sub"), select: 1) |> Map.put(:prefix, "global") |> plan()
-    assert {%{query: %{sources: {{"posts", Post, "my_prefix"}}}}} = query.sources
-
-    {query, _, _} = from(subquery(Post, prefix: "sub"), prefix: "local", select: 1) |> Map.put(:prefix, "global") |> plan()
-    assert {%{query: %{sources: {{"posts", Post, "my_prefix"}}}}} = query.sources
 
     # Schema prefix in join
     {query, _, _} = from(c in Comment, join: Post) |> plan()
@@ -609,112 +575,123 @@ defmodule Ecto.Query.PlannerTest do
     assert deeper_level_union_query.sources == {{"comments", Comment, "global"}}
   end
 
-  test "plan: CTEs on all" do
-    {%{with_ctes: with_expr}, _, cache} =
-      Comment
-      |> with_cte("cte", as: ^from(c in Comment))
-      |> plan()
-    %{queries: [{"cte", query}]} = with_expr
-    assert query.sources == {{"comments", Comment, nil}}
-    assert %Ecto.Query.SelectExpr{expr: {:&, [], [0]}} = query.select
-    assert [
-      :all,
-      {"comments", Comment, _, nil},
-      {:non_recursive_cte, "cte", [{"comments", Comment, _, nil}, {:select, {:&, _, [0]}}]}
-    ] = cache
+  describe "plan: CTEs" do
+    test "with uncacheable queries are uncacheable" do
+      {_, _, cache} =
+        Comment
+        |> with_cte("cte", as: ^from(c in Comment, where: c.id in ^[1, 2, 3]))
+        |> plan()
 
-    {%{with_ctes: with_expr}, _, cache} =
-      Comment
-      |> with_cte("cte", as: ^from(c in Comment, where: c in ^[1, 2, 3]))
-      |> plan()
-    %{queries: [{"cte", query}]} = with_expr
-    assert query.sources == {{"comments", Comment, nil}}
-    assert %Ecto.Query.SelectExpr{expr: {:&, [], [0]}} = query.select
-    assert :nocache = cache
+      assert cache == :nocache
+    end
 
-    {%{with_ctes: with_expr}, _, cache} =
-      Comment
-      |> recursive_ctes(true)
-      |> with_cte("cte", as: fragment("SELECT * FROM comments WHERE id = ?", ^123))
-      |> plan()
-    %{queries: [{"cte", query_expr}]} = with_expr
-    expr = {:fragment, [], [raw: "SELECT * FROM comments WHERE id = ", expr: {:^, [], [0]}, raw: ""]}
-    assert expr == query_expr.expr
-    assert [:all, {"comments", Comment, _, nil}, {:recursive_cte, "cte", ^expr}] = cache
-  end
+    test "on all" do
+      {%{with_ctes: with_expr}, _, cache} =
+        Comment
+        |> with_cte("cte", as: ^from(c in Comment))
+        |> plan()
+      %{queries: [{"cte", query}]} = with_expr
+      assert query.sources == {{"comments", Comment, nil}}
+      assert %Ecto.Query.SelectExpr{expr: {:&, [], [0]}} = query.select
+      assert [
+        :all,
+        {"comments", Comment, _, nil},
+        {:non_recursive_cte, "cte", [{"comments", Comment, _, nil}, {:select, {:&, _, [0]}}]}
+      ] = cache
 
-  test "plan: CTEs on update_all" do
-    recent_comments =
-      from(c in Comment,
-        order_by: [desc: c.posted],
-        limit: ^500,
-        select: [:id]
-      )
+      {%{with_ctes: with_expr}, _, cache} =
+        Comment
+        |> with_cte("cte", as: ^from(c in Comment, where: c in ^[1, 2, 3]))
+        |> plan()
+      %{queries: [{"cte", query}]} = with_expr
+      assert query.sources == {{"comments", Comment, nil}}
+      assert %Ecto.Query.SelectExpr{expr: {:&, [], [0]}} = query.select
+      assert :nocache = cache
 
-    {%{with_ctes: with_expr}, [500, "text"], cache} =
-      Comment
-      |> with_cte("recent_comments", as: ^recent_comments)
-      |> join(:inner, [c], r in "recent_comments", on: c.id == r.id)
-      |> update(set: [text: ^"text"])
-      |> select([c, r], c)
-      |> plan(:update_all)
+      {%{with_ctes: with_expr}, _, cache} =
+        Comment
+        |> recursive_ctes(true)
+        |> with_cte("cte", as: fragment("SELECT * FROM comments WHERE id = ?", ^123))
+        |> plan()
+      %{queries: [{"cte", query_expr}]} = with_expr
+      expr = {:fragment, [], [raw: "SELECT * FROM comments WHERE id = ", expr: {:^, [], [0]}, raw: ""]}
+      assert expr == query_expr.expr
+      assert [:all, {"comments", Comment, _, nil}, {:recursive_cte, "cte", ^expr}] = cache
+    end
 
-    %{queries: [{"recent_comments", cte}]} = with_expr
-    assert {{"comments", Comment, nil}} = cte.sources
-    assert %{expr: {:^, [], [0]}, params: [{500, :integer}]} = cte.limit
+    test "on update_all" do
+      recent_comments =
+        from(c in Comment,
+          order_by: [desc: c.posted],
+          limit: ^500,
+          select: [:id]
+        )
 
-    assert [:update_all, _, _, _, _, {:non_recursive_cte, "recent_comments", cte_cache}] = cache
-    assert [
-             {:limit, {:^, [], [0]}},
-             {:order_by, [[desc: _]]},
-             {"comments", Comment, _, nil},
-             {:select, {:&, [], [0]}}
-           ] = cte_cache
-  end
+      {%{with_ctes: with_expr}, [500, "text"], cache} =
+        Comment
+        |> with_cte("recent_comments", as: ^recent_comments)
+        |> join(:inner, [c], r in "recent_comments", on: c.id == r.id)
+        |> update(set: [text: ^"text"])
+        |> select([c, r], c)
+        |> plan(:update_all)
 
-  test "plan: CTEs on delete_all" do
-    recent_comments =
-      from(c in Comment,
-        order_by: [desc: c.posted],
-        limit: ^500,
-        select: [:id]
-      )
+      %{queries: [{"recent_comments", cte}]} = with_expr
+      assert {{"comments", Comment, nil}} = cte.sources
+      assert %{expr: {:^, [], [0]}, params: [{500, :integer}]} = cte.limit
 
-    {%{with_ctes: with_expr}, [500, "text"], cache} =
-      Comment
-      |> with_cte("recent_comments", as: ^recent_comments)
-      |> join(:inner, [c], r in "recent_comments", on: c.id == r.id and c.text == ^"text")
-      |> select([c, r], c)
-      |> plan(:delete_all)
+      assert [:update_all, _, _, _, _, {:non_recursive_cte, "recent_comments", cte_cache}] = cache
+      assert [
+               {:limit, {:^, [], [0]}},
+               {:order_by, [[desc: _]]},
+               {"comments", Comment, _, nil},
+               {:select, {:&, [], [0]}}
+             ] = cte_cache
+    end
 
-    %{queries: [{"recent_comments", cte}]} = with_expr
-    assert {{"comments", Comment, nil}} = cte.sources
-    assert %{expr: {:^, [], [0]}, params: [{500, :integer}]} = cte.limit
+    test "on delete_all" do
+      recent_comments =
+        from(c in Comment,
+          order_by: [desc: c.posted],
+          limit: ^500,
+          select: [:id]
+        )
 
-    assert [:delete_all, _, _, _, {:non_recursive_cte, "recent_comments", cte_cache}] = cache
-    assert [
-             {:limit, {:^, [], [0]}},
-             {:order_by, [[desc: _]]},
-             {"comments", Comment, _, nil},
-             {:select, {:&, [], [0]}}
-           ] = cte_cache
-  end
+      {%{with_ctes: with_expr}, [500, "text"], cache} =
+        Comment
+        |> with_cte("recent_comments", as: ^recent_comments)
+        |> join(:inner, [c], r in "recent_comments", on: c.id == r.id and c.text == ^"text")
+        |> select([c, r], c)
+        |> plan(:delete_all)
 
-  test "plan: CTE prefixes" do
-    {%{with_ctes: with_expr} = query, _, _} = Comment |> with_cte("cte", as: ^from(c in Comment)) |> plan()
-    %{queries: [{"cte", cte_query}]} = with_expr
-    assert query.sources == {{"comments", Comment, nil}}
-    assert cte_query.sources == {{"comments", Comment, nil}}
+      %{queries: [{"recent_comments", cte}]} = with_expr
+      assert {{"comments", Comment, nil}} = cte.sources
+      assert %{expr: {:^, [], [0]}, params: [{500, :integer}]} = cte.limit
 
-    {%{with_ctes: with_expr} = query, _, _} = Comment |> with_cte("cte", as: ^from(c in Comment)) |> Map.put(:prefix, "global") |> plan()
-    %{queries: [{"cte", cte_query}]} = with_expr
-    assert query.sources == {{"comments", Comment, "global"}}
-    assert cte_query.sources == {{"comments", Comment, "global"}}
+      assert [:delete_all, _, _, _, {:non_recursive_cte, "recent_comments", cte_cache}] = cache
+      assert [
+               {:limit, {:^, [], [0]}},
+               {:order_by, [[desc: _]]},
+               {"comments", Comment, _, nil},
+               {:select, {:&, [], [0]}}
+             ] = cte_cache
+    end
 
-    {%{with_ctes: with_expr} = query, _, _} = Comment |> with_cte("cte", as: ^(from(c in Comment) |> Map.put(:prefix, "cte"))) |> Map.put(:prefix, "global") |> plan()
-    %{queries: [{"cte", cte_query}]} = with_expr
-    assert query.sources == {{"comments", Comment, "global"}}
-    assert cte_query.sources == {{"comments", Comment, "cte"}}
+    test "prefixes" do
+      {%{with_ctes: with_expr} = query, _, _} = Comment |> with_cte("cte", as: ^from(c in Comment)) |> plan()
+      %{queries: [{"cte", cte_query}]} = with_expr
+      assert query.sources == {{"comments", Comment, nil}}
+      assert cte_query.sources == {{"comments", Comment, nil}}
+
+      {%{with_ctes: with_expr} = query, _, _} = Comment |> with_cte("cte", as: ^from(c in Comment)) |> Map.put(:prefix, "global") |> plan()
+      %{queries: [{"cte", cte_query}]} = with_expr
+      assert query.sources == {{"comments", Comment, "global"}}
+      assert cte_query.sources == {{"comments", Comment, "global"}}
+
+      {%{with_ctes: with_expr} = query, _, _} = Comment |> with_cte("cte", as: ^(from(c in Comment) |> Map.put(:prefix, "cte"))) |> Map.put(:prefix, "global") |> plan()
+      %{queries: [{"cte", cte_query}]} = with_expr
+      assert query.sources == {{"comments", Comment, "global"}}
+      assert cte_query.sources == {{"comments", Comment, "cte"}}
+    end
   end
 
   test "normalize: validates literal types" do
@@ -748,6 +725,29 @@ defmodule Ecto.Query.PlannerTest do
 
     assert_raise Ecto.Query.CastError, ~r/value `"1"` in `select` cannot be cast to type Ecto.UUID/, fn ->
       from(Post, []) |> select([p], type(^"1", Ecto.UUID)) |> normalize
+    end
+  end
+
+  test "normalize: late bindings with as" do
+    query = from(Post, as: :posts, where: as(:posts).code == ^123) |> normalize()
+    assert Macro.to_string(hd(query.wheres).expr) == "&0.code() == ^0"
+
+    assert_raise Ecto.QueryError, ~r/could not find named binding `as\(:posts\)`/, fn ->
+      from(Post, where: as(:posts).code == ^123) |> normalize()
+    end
+  end
+
+  test "normalize: late parent bindings with as" do
+    child = from(c in Comment, where: parent_as(:posts).posted == c.posted)
+    query = from(Post, as: :posts, join: c in subquery(child)) |> normalize()
+    assert Macro.to_string(hd(hd(query.joins).source.query.wheres).expr) == "parent_as(&0).posted() == &0.posted()"
+
+    assert_raise Ecto.SubQueryError, ~r/could not find named binding `parent_as\(:posts\)`/, fn ->
+      from(Post, join: c in subquery(child)) |> normalize()
+    end
+
+    assert_raise Ecto.QueryError, ~r/`parent_as\(:posts\)` can only be used in subqueries/, fn ->
+      from(Post, where: parent_as(:posts).code == ^123) |> normalize()
     end
   end
 
