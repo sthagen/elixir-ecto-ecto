@@ -1,10 +1,11 @@
 # Changelog for v3.x
 
-## v3.4.3-dev (2020-04-19)
+## v3.4.3 (2020-04-27)
 
 ### Enhancements
 
   * [Ecto.Query] Support `as/1` and `parent_as/1` for lazy named bindings and to allow parent references from subqueries
+  * [Ecto.Query] Support `x in subquery(query)`
 
 ### Bug fixes
 
@@ -34,6 +35,8 @@
   * [Ecto.Repo] Deprecate `conflict_target: {:constraint, _}`. It is a discouraged approach and `{:unsafe_fragment, _}` is still available if someone definitely needs it
 
 ## v3.4.0 (2020-03-24)
+
+v3.4 requires Elixir v1.7+.
 
 ### Enhancements
 
