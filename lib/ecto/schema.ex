@@ -194,6 +194,8 @@ defmodule Ecto.Schema do
 
   Using `@primary_key` should be prefered for single field primary keys and
   sharing primary key definitions between multiple schemas using macros.
+  Setting `@primary_key` also automatically configures the reference types
+  for `has_one` and `has_many` associations.
 
   Ecto also supports composite primary keys, which is where you need to use
   `primary_key: true` for the fields in your schema. This usually goes along
@@ -740,7 +742,7 @@ defmodule Ecto.Schema do
         schema "comments" do
           field :content, :string
           field :parent_id, :integer
-          belongs_to :parent, Comment, foreign_key: :id, references: :parent_id, define_field: false
+          belongs_to :parent, Comment, foreign_key: :parent_id, references: :id, define_field: false
           has_many :children, Comment, foreign_key: :parent_id, references: :id
         end
       end
@@ -847,17 +849,6 @@ defmodule Ecto.Schema do
       post = Repo.get(Post, 42)
       authors = Repo.all assoc(post, :comments_authors)
 
-  Although we used the `:through` association in the example above, Ecto
-  also allows developers to dynamically build the through associations using
-  the `Ecto.assoc/2` function:
-
-      assoc(post, [:comments, :author])
-
-  In fact, given `:through` associations are read-only, **using the `Ecto.assoc/2`
-  format is the preferred mechanism for working with through associations**. Use
-  the schema-based one only if you need to store the through data alongside of
-  the parent struct, in specific cases such as preloading.
-
   `:through` associations can also be preloaded. In such cases, not only
   the `:through` association is preloaded but all intermediate steps are
   preloaded too:
@@ -882,6 +873,8 @@ defmodule Ecto.Schema do
       [comment] = Repo.all(Comment) |> Repo.preload(:post_permalink)
       comment.post_permalink #=> %Permalink{...}
 
+  Note `:through` associations are read-only. For example, you cannot use
+  `Ecto.Changeset.cast_assoc/3` to modify through associations.
   """
   defmacro has_many(name, queryable, opts \\ []) do
     queryable = expand_alias(queryable, __CALLER__)
@@ -1128,7 +1121,7 @@ defmodule Ecto.Schema do
   The third and final option is to use `many_to_many/3` to
   define the relationships between the resources. In this case,
   the comments table won't have the foreign key, instead there
-  is a intermediary table responsible for associating the entries:
+  is an intermediary table responsible for associating the entries:
 
       defmodule Comment do
         use Ecto.Schema
@@ -1235,6 +1228,9 @@ defmodule Ecto.Schema do
       join table, such as: `create unique_index(:posts_tags, [:post_id, :tag_id])`
 
     * `:where` - A filter for the association. See "Filtering associations"
+      in `has_many/3`
+
+    * `:join_where` - A filter for the join table. See "Filtering associations"
       in `has_many/3`
 
   ## Removing data
@@ -1367,6 +1363,8 @@ defmodule Ecto.Schema do
   """
   defmacro many_to_many(name, queryable, opts \\ []) do
     queryable = expand_alias(queryable, __CALLER__)
+    opts = expand_alias_in_key(opts, :join_through, __CALLER__)
+
     quote do
       Ecto.Schema.__many_to_many__(__MODULE__, unquote(name), unquote(queryable), unquote(opts))
     end
@@ -1385,7 +1383,7 @@ defmodule Ecto.Schema do
   database level.
 
   The embedded may or may not have a primary key. Ecto uses the primary keys
-  to detect if an embed is being updated or not. If a primary is not present,
+  to detect if an embed is being updated or not. If a primary key is not present,
   `:on_replace` should be set to either `:update` or `:delete` if there is a
   desire to either update or delete the current embed when a new one is set.
 
@@ -1395,6 +1393,10 @@ defmodule Ecto.Schema do
       replaced when casting or manipulating parent changeset. May be
       `:raise` (default), `:mark_as_invalid`, `:update`, or `:delete`.
       See `Ecto.Changeset`'s section on related data for more info.
+
+    * `:source` - Defines the name that is to be used in database for this field.
+      This is useful when attaching to an existing database. The value should be
+      an atom.
 
   ## Examples
 
@@ -1551,6 +1553,10 @@ defmodule Ecto.Schema do
       replaced when casting or manipulating parent changeset. May be
       `:raise` (default), `:mark_as_invalid`, or `:delete`.
       See `Ecto.Changeset`'s section on related data for more info.
+
+    * `:source` - Defines the name that is to be used in database for this field.
+      This is useful when attaching to an existing database. The value should be
+      an atom.
 
   ## Examples
 
@@ -1846,7 +1852,7 @@ defmodule Ecto.Schema do
     Module.put_attribute(mod, :changeset_fields, {name, {:assoc, struct}})
   end
 
-  @valid_many_to_many_options [:join_through, :join_defaults, :join_keys, :on_delete, :defaults, :on_replace, :unique, :where]
+  @valid_many_to_many_options [:join_through, :join_defaults, :join_keys, :on_delete, :defaults, :on_replace, :unique, :where, :join_where]
 
   @doc false
   def __many_to_many__(mod, name, queryable, opts) do
@@ -2091,4 +2097,12 @@ defmodule Ecto.Schema do
     do: Macro.expand(ast, %{env | function: {:__schema__, 2}})
   defp expand_alias(ast, _env),
     do: ast
+
+  defp expand_alias_in_key(opts, key, env) do
+    if is_list(opts) and Keyword.has_key?(opts, key) do
+      Keyword.update!(opts, key, &expand_alias(&1, env))
+    else
+      opts
+    end
+  end
 end

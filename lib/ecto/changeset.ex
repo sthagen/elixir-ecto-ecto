@@ -155,9 +155,8 @@ defmodule Ecto.Changeset do
 
   The `:delete` option in particular must be used carefully as it would allow
   users to delete any associated data by simply not sending any data for a given
-  field. If you need deletion, it is often preferred to add a separate boolean
-  virtual field to the changeset function that will allow you to manually mark
-  it for deletion, as in the example below:
+  field. If you need deletion, it is often preferred to manually mark the changeset
+  for deletion if a `delete` field is set in the params, as in the example below:
 
       defmodule Comment do
         use Ecto.Schema
@@ -165,20 +164,14 @@ defmodule Ecto.Changeset do
 
         schema "comments" do
           field :body, :string
-          field :delete, :boolean, virtual: true
+        end
+
+        def changeset(comment, %{"delete" => "true"}) do
+          %{Ecto.Changeset.change(comment) | action: :delete}
         end
 
         def changeset(comment, params) do
-          cast(comment, params, [:body, :delete])
-          |> maybe_mark_for_deletion
-        end
-
-        defp maybe_mark_for_deletion(changeset) do
-          if get_change(changeset, :delete) do
-            %{changeset | action: :delete}
-          else
-            changeset
-          end
+          cast(comment, params, [:body])
         end
       end
 
@@ -195,7 +188,7 @@ defmodule Ecto.Changeset do
       types = %{first_name: :string, last_name: :string, email: :string}
       changeset =
         {user, types}
-        |> Ecto.Changeset.cast(params["name"], Map.keys(types))
+        |> Ecto.Changeset.cast(params, Map.keys(types))
         |> Ecto.Changeset.validate_required(...)
         |> Ecto.Changeset.validate_length(...)
 
@@ -583,26 +576,47 @@ defmodule Ecto.Changeset do
     end
   end
 
-  defp convert_params(params) do
-    params
-    |> Enum.reduce(nil, fn
-      {key, _value}, nil when is_binary(key) ->
-        nil
+  # TODO: Remove branch when we require Elixir v1.10+.
+  if Code.ensure_loaded?(:maps) and function_exported?(:maps, :iterator, 1) do
+    defp convert_params(params) do
+      case :maps.next(:maps.iterator(params)) do
+        {key, _, _} when is_atom(key) ->
+          for {key, value} <- params, into: %{} do
+            if is_atom(key) do
+              {Atom.to_string(key), value}
+            else
+              raise Ecto.CastError, type: :map, value: params,
+                message: "expected params to be a map with atoms or string keys, " <>
+                           "got a map with mixed keys: #{inspect params}"
+            end
+          end
 
-      {key, _value}, _ when is_binary(key) ->
-        raise Ecto.CastError, type: :map, value: params,
-                              message: "expected params to be a map with atoms or string keys, " <>
-                                       "got a map with mixed keys: #{inspect params}"
+        _ ->
+          params
+      end
+    end
+  else
+    defp convert_params(params) do
+      params
+      |> Enum.reduce(nil, fn
+        {key, _value}, nil when is_binary(key) ->
+          nil
+  
+        {key, _value}, _ when is_binary(key) ->
+          raise Ecto.CastError, type: :map, value: params,
+                                message: "expected params to be a map with atoms or string keys, " <>
+                                         "got a map with mixed keys: #{inspect params}"
+  
+        {key, value}, nil when is_atom(key) ->
+          [{Atom.to_string(key), value}]
 
-      {key, value}, nil when is_atom(key) ->
-        [{Atom.to_string(key), value}]
-
-      {key, value}, acc when is_atom(key) ->
-        [{Atom.to_string(key), value} | acc]
-    end)
-    |> case do
-      nil -> params
-      list -> :maps.from_list(list)
+        {key, value}, acc when is_atom(key) ->
+          [{Atom.to_string(key), value} | acc]
+      end)
+      |> case do
+        nil -> params
+        list -> :maps.from_list(list)
+      end
     end
   end
 
@@ -659,8 +673,9 @@ defmodule Ecto.Changeset do
       be invoked (see the "On replace" section on the module documentation)
 
   Every time the `MyApp.Address.changeset/2` function is invoked, it must
-  return a changeset. This changeset will be applied to your Repo with
-  the proper action accordingly.
+  return a changeset. Once the parent changeset is given to an `Ecto.Repo`
+  function, all entries will be inserted/updated/deleted within the same
+  transaction.
 
   Note developers are allowed to explicitly set the `:action` field of a
   changeset to instruct Ecto how to act in certain situations. Let's suppose
@@ -847,8 +862,10 @@ defmodule Ecto.Changeset do
 
   defp relation!(_op, type, _name, {type, relation}),
     do: relation
+  defp relation!(op, :assoc, name, nil),
+    do: raise(ArgumentError, "cannot #{op} assoc `#{name}`, assoc `#{name}` not found. Make sure it is spelled correctly and that the association type is not read-only")
   defp relation!(op, type, name, nil),
-    do: raise(ArgumentError, "cannot #{op} #{type} `#{name}`, assoc `#{name}` not found. Make sure it is spelled correctly and properly pluralized (or singularized)")
+    do: raise(ArgumentError, "cannot #{op} #{type} `#{name}`, #{type} `#{name}` not found. Make sure that it exists and is spelled correctly")
   defp relation!(op, type, name, {other, _}) when other in @relations,
     do: raise(ArgumentError, "expected `#{name}` to be an #{type} in `#{op}_#{type}`, got: `#{other}`")
   defp relation!(op, type, name, schema_type),
@@ -1262,19 +1279,14 @@ defmodule Ecto.Changeset do
       This extremely useful when associating existing data, as we will see
       in the "Example: Adding tags to a post" section.
 
-  Note, however, that `put_assoc/4` always expects all data currently associated to
-  be given. In both examples above, if the changeset has any other comment besides
-  the comment with `id` equal to 1, all of them will be considered as replaced,
-  invoking the relevant `:on_replace` callback which may potentially remove the
-  data. In other words, if only a comment with a id equal to 1 is given, it will
-  be the only one kept. Therefore, `put_assoc/4` always works with the whole data,
-  which may be undesired in some cases. Let's see an example.
+  Once the parent changeset is given to an `Ecto.Repo` function, all entries
+  will be inserted/updated/deleted within the same transaction.
 
   ## Example: Adding a comment to a post
 
   Imagine a relationship where Post has many comments and you want to add a
   new comment to an existing post. While it is possible to use `put_assoc/4`
-  for this, it would be unecessarily complex. Let's see an example.
+  for this, it would be unnecessarily complex. Let's see an example.
 
   First, let's fetch the post with all existing comments:
 
@@ -1778,19 +1790,19 @@ defmodule Ecto.Changeset do
   early feedback to users, since most conflicting data will have been
   inserted prior to the current validation phase.
 
-  If given a list of fields, the first field name will be used as the
-  error key to the changeset errors keyword list.
-
   ## Options
 
     * `:message` - the message in case the constraint check fails,
-      defaults to "has already been taken"
-
+      defaults to "has already been taken".
 
     * `:match` - how the changeset constraint name is matched against the
       repo constraint, may be `:exact` or `:suffix`. Defaults to `:exact`.
       `:suffix` matches any repo constraint which `ends_with?` `:name`
        to this changeset constraint.
+
+    * `:error_key` - the key to which changeset error will be added when
+      check fails, defaults to the first field name of the given list of
+      fields.
 
     * `:prefix` - The prefix to run the query on (such as the schema path
       in Postgres or the database in MySQL). See `Ecto.Repo` documentation
@@ -1820,13 +1832,16 @@ defmodule Ecto.Changeset do
       {field, get_field(changeset, field)}
     end
 
+    # No need to query if there is a prior error for the fields
+    any_prior_errors_for_fields? = Enum.any?(changeset.errors, &(elem(&1, 0) in fields))
+
     # No need to query if we haven't changed any of the fields in question
     unrelated_changes? = Enum.all?(fields, &not Map.has_key?(changeset.changes, &1))
 
     # If we don't have values for all fields, we can't query for uniqueness
     any_nil_values_for_fields? = Enum.any?(where_clause, &(&1 |> elem(1) |> is_nil()))
 
-    if unrelated_changes? || any_nil_values_for_fields? do
+    if unrelated_changes? || any_nil_values_for_fields? || any_prior_errors_for_fields? do
       changeset
     else
       query =
@@ -1846,7 +1861,9 @@ defmodule Ecto.Changeset do
         end
 
       if repo.one(query) do
-        add_error(changeset, hd(fields), message(opts, "has already been taken"),
+        error_key = Keyword.get(opts, :error_key, hd(fields))
+
+        add_error(changeset, error_key, message(opts, "has already been taken"),
                   validation: :unsafe_unique, fields: fields)
       else
         changeset
@@ -2532,7 +2549,7 @@ defmodule Ecto.Changeset do
       changeset.errors #=> [email: {"has already been taken", []}]
 
   In complex cases, instead of relying on name inference, it may be best
-  to set the contraint name explicitly:
+  to set the constraint name explicitly:
 
       # In the migration
       create unique_index(:users, [:email, :company_id], name: :users_email_company_id_index)

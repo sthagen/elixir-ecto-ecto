@@ -5,10 +5,25 @@ alias Ecto.Query.{BooleanExpr, DynamicExpr, JoinExpr, QueryExpr, WithExpr}
 
 defimpl Inspect, for: Ecto.Query.DynamicExpr do
   def inspect(%DynamicExpr{binding: binding} = dynamic, opts) do
-    {expr, binding, params, _, _} =
-      Ecto.Query.Builder.Dynamic.fully_expand(%Ecto.Query{joins: Enum.drop(binding, 1)}, dynamic)
+    joins =
+      binding
+      |> Enum.drop(1)
+      |> Enum.with_index()
+      |> Enum.map(&%JoinExpr{ix: &1})
 
-    names = for {name, _, _} <- binding, do: Atom.to_string(name)
+    aliases =
+      for({as, _} when is_atom(as) <- binding, do: as)
+      |> Enum.with_index()
+      |> Map.new
+
+    query = %Ecto.Query{joins: joins, aliases: aliases}
+
+    {expr, binding, params, _, _} = Ecto.Query.Builder.Dynamic.fully_expand(query, dynamic)
+
+    names = Enum.map(binding, fn
+      {_, {name, _, _}} -> Atom.to_string(name)
+      {name, _, _} -> Atom.to_string(name)
+    end)
 
     inspected = Inspect.Ecto.Query.expr(expr, List.to_tuple(names), %{expr: expr, params: params})
 
@@ -36,12 +51,16 @@ defimpl Inspect, for: Ecto.Query do
       %WithExpr{recursive: recursive, queries: [_ | _] = queries} ->
         with_ctes =
           Enum.map(queries, fn {name, query} ->
-            cte = __MODULE__.inspect(query, opts)
+            cte = case query do
+              %Ecto.Query{} -> __MODULE__.inspect(query, opts)
+              %Ecto.Query.QueryExpr{} -> expr(query, {})
+            end
+
             concat(["|> with_cte(\"" <> name <> "\", as: ", cte, ")"])
           end)
 
-        recursive_ctes = if recursive, do: "|> recursive_ctes(true)", else: ""
-        ([result, recursive_ctes] ++ with_ctes) |> Enum.intersperse(break("\n")) |> concat()
+        result = if recursive, do: glue(result, "\n", "|> recursive_ctes(true)"), else: result
+        [result | with_ctes] |> Enum.intersperse(break("\n")) |> concat()
 
       _ ->
         result

@@ -235,7 +235,7 @@ defmodule Ecto.Query do
   not known when writing the subquery:
 
       child_query = from c in Comment, where: parent_as(:posts).id == c.post_id
-      from p in Post, as: :posts, join: c in subquery(child_query)
+      from p in Post, as: :posts, inner_lateral_join: c in subquery(child_query)
 
   ### Bindingless operations
 
@@ -1751,7 +1751,7 @@ defmodule Ecto.Query do
 
       # Using direct fields access
       from(p in Post,
-        join: c in assoc(p, :category)
+        join: c in assoc(p, :category),
         group_by: [p.id, c.name])
 
   ## Expressions example
@@ -1853,6 +1853,19 @@ defmodule Ecto.Query do
                  where: l.inserted_at > c.updated_at,
                  preload: [comments: {c, likes: l}]
 
+  Applying a limit to the association can be achieved with `inner_lateral_join`:
+
+      Repo.all from p in Post, as: :post,
+                 join: c in assoc(p, :comments),
+                 inner_lateral_join: top_five in subquery(
+                   from Comment,
+                   where: [post_id: parent_as(:post).id],
+                   order_by: :popularity,
+                   limit: 5,
+                   select: [:id]
+                 ), on: top_five.id == c.id,
+                 preload: [comments: c]
+
   ## Preload queries
 
   Preload also allows queries to be given, allowing you to filter or
@@ -1873,7 +1886,19 @@ defmodule Ecto.Query do
       Repo.all from p in Post, preload: [comments: ^comments_query]
 
   won't bring the top of comments per post. Rather, it will only bring
-  the 5 top comments across all posts.
+  the 5 top comments across all posts. Instead, use a window:
+
+      ranking_query =
+        from c in Comment,
+        select: %{id: c.id, row_number: row_number() |> over(:posts_partition)},
+        windows: [posts_partition: [partition_by: :post_id, order_by: :popularity]]
+
+      comments_query =
+        from c in Comment,
+        join: r in subquery(ranking_query),
+        on: c.id == r.id and r.row_number <= 5
+
+      Repo.all from p in Post, preload: [comments: ^comments_query]
 
   ## Preload functions
 
@@ -1898,15 +1923,12 @@ defmodule Ecto.Query do
       include the `:post_id` field
 
     * For `has_many :through` - it behaves similarly to a regular `has_many`
-      but note that the IDs received are the ones from the closest
-      parent and not the furthest one. Imagine for example a post has
-      many comments and each comment has an author. Therefore, a post
-      may have many comments_authors, written as
+      but note that the IDs received are of the last association. Imagine
+      for example a post has many comments and each comment has an author.
+      Therefore, a post may have many comments_authors, written as
       `has_many :comments_authors, through: [:comments, :author]`. When
       preloading authors with a custom function via `:comments_authors`,
-      the function will receive the IDs of the comments and not of the
-      posts. That's because through associations are still loaded step
-      by step
+      the function will receive the IDs of the authors as the last step
 
     * For `many_to_many` -  the function receives the IDs of the parent
       association and it must return a tuple with the parent id as first

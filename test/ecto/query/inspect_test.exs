@@ -38,6 +38,9 @@ defmodule Ecto.Query.InspectTest do
     assert inspect(dynamic([a, b, ..., c, d], a.foo == b.bar and c.foo == d.bar)) ==
            "dynamic([a, b, ..., c, d], a.foo == b.bar and c.foo == d.bar)"
 
+    assert inspect(dynamic([comments: c], c.bar == ^1)) ==
+           "dynamic([comments: c], c.bar == ^1)"
+
     dynamic = dynamic([p], p.bar == ^1)
     assert inspect(dynamic([p], ^dynamic and p.foo == ^0)) ==
            "dynamic([p], p.bar == ^1 and p.foo == ^0)"
@@ -99,6 +102,13 @@ defmodule Ecto.Query.InspectTest do
       ~s{on: t1.id == c0.parent_id,\n  } <>
       ~s{select: %\{id: c0.id, depth: fragment("? + 1", t1.depth)\}), } <>
       ~s{select: %\{id: c0.id, depth: fragment("1")\}>)}
+  end
+
+  test "cte with fragments" do
+    assert with_cte("foo", "foo", as: fragment("select 1 as bar"))
+           |> inspect() |> Inspect.Algebra.format(80) |> to_string() ==
+      ~s{#Ecto.Query<from f0 in "foo">\n} <>
+      ~s{|> with_cte("foo", as: fragment("select 1 as bar"))}
   end
 
   test "join" do

@@ -728,12 +728,16 @@ defmodule Ecto.Query.Planner do
     do: {key, Enum.reverse(inner, params)}
 
   defp cast_param(_kind, query, expr, %DynamicExpr{}, _type, _value) do
-    error! query, expr, "dynamic expressions can only be interpolated inside other " <>
-                        "dynamic expressions or at the top level of where, having, update or a join's on"
+    error! query, expr, "invalid dynamic expression",
+                        "dynamic expressions can only be interpolated at the top level of where, having, group_by, order_by, update or a join's on"
   end
   defp cast_param(_kind, query, expr, [{key, _} | _], _type, _value) when is_atom(key) do
-    error! query, expr, "keyword lists can only be interpolated at the top level of " <>
-                        "where, having, distinct, order_by, update or a join's on"
+    error! query, expr, "invalid keyword list",
+                        "keyword lists are only allowed at the top level of where, having, distinct, order_by, update or a join's on"
+  end
+  defp cast_param(_kind, query, expr, %x{}, {:in, _type}, _value) when x in [Ecto.Query, Ecto.SubQuery] do
+    error! query, expr, "an #{inspect(x)} struct is not supported as right-side value of `in` operator",
+                        "Did you mean to write `expr in subquery(query)` instead?"
   end
   defp cast_param(kind, query, expr, v, type, adapter) do
     type = field_type!(kind, query, expr, type)
@@ -1356,10 +1360,6 @@ defmodule Ecto.Query.Planner do
     {{:list, args}, fields, from}
   end
 
-  defp collect_fields(expr, fields, from, _query, _take, _keep_literals?) when is_atom(expr) do
-    {expr, fields, from}
-  end
-
   defp collect_fields(expr, fields, from, _query, _take, true) when is_binary(expr) do
     {{:value, :binary}, [expr | fields], from}
   end
@@ -1370,6 +1370,14 @@ defmodule Ecto.Query.Planner do
 
   defp collect_fields(expr, fields, from, _query, _take, true) when is_float(expr) do
     {{:value, :float}, [expr | fields], from}
+  end
+
+  defp collect_fields(expr, fields, from, _query, _take, true) when is_boolean(expr) do
+    {{:value, :boolean}, [expr | fields], from}
+  end
+
+  defp collect_fields(expr, fields, from, _query, _take, _keep_literals?) when is_atom(expr) do
+    {expr, fields, from}
   end
 
   defp collect_fields(expr, fields, from, _query, _take, false)
@@ -1610,7 +1618,7 @@ defmodule Ecto.Query.Planner do
       type = schema.__schema__(:type, field) ->
         type
 
-      Map.has_key?(schema.__struct__, field) ->
+      Map.has_key?(schema.__struct__(), field) ->
         error! query, expr, "field `#{field}` in `#{kind}` is a virtual field in schema #{inspect schema}"
 
       true ->
@@ -1734,5 +1742,9 @@ defmodule Ecto.Query.Planner do
 
   defp error!(query, expr, message) do
     raise Ecto.QueryError, message: message, query: query, file: expr.file, line: expr.line
+  end
+
+  defp error!(query, expr, message, hint) do
+    raise Ecto.QueryError, message: message, query: query, file: expr.file, line: expr.line, hint: hint
   end
 end
