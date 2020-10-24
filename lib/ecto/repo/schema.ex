@@ -232,7 +232,7 @@ defmodule Ecto.Repo.Schema do
     # On insert, we always merge the whole struct into the
     # changeset as changes, except the primary key if it is nil.
     changeset = put_repo_and_action(changeset, :insert, repo, opts)
-    changeset = surface_changes(changeset, struct, fields ++ assocs)
+    changeset = Relation.surface_changes(changeset, struct, fields ++ assocs)
 
     wrap_in_transaction(adapter, adapter_meta, opts, changeset, assocs, embeds, prepare, fn ->
       assoc_opts = assoc_opts(assocs, opts)
@@ -240,7 +240,6 @@ defmodule Ecto.Repo.Schema do
 
       {changeset, parents, children} = pop_assocs(user_changeset, assocs)
       changeset = process_parents(changeset, parents, adapter, assoc_opts)
-      changeset = repo_changes(changeset)
 
       if changeset.valid? do
         embeds = Ecto.Embedded.prepare(changeset, embeds, adapter, :insert)
@@ -320,14 +319,13 @@ defmodule Ecto.Repo.Schema do
     # changeset before hand.
     changeset = put_repo_and_action(changeset, :update, repo, opts)
 
-    if changeset.changes != %{} or changeset.repo_changes != %{} or force? do
+    if changeset.changes != %{} or force? do
       wrap_in_transaction(adapter, adapter_meta, opts, changeset, assocs, embeds, prepare, fn ->
         assoc_opts = assoc_opts(assocs, opts)
         user_changeset = run_prepare(changeset, prepare)
 
         {changeset, parents, children} = pop_assocs(user_changeset, assocs)
         changeset = process_parents(changeset, parents, adapter, assoc_opts)
-        changeset = repo_changes(changeset)
 
         if changeset.valid? do
           embeds = Ecto.Embedded.prepare(changeset, embeds, adapter, :update)
@@ -500,14 +498,6 @@ defmodule Ecto.Repo.Schema do
     end)
   end
 
-  defp repo_changes(%{repo_changes: repo_changes} = changeset) do
-    if repo_changes == %{} do
-      changeset
-    else
-      update_in(changeset.changes, &Map.merge(&1, repo_changes))
-    end
-  end
-
   defp struct_from_changeset!(action, %{data: nil}),
     do: raise(ArgumentError, "cannot #{action} a changeset without :data")
   defp struct_from_changeset!(_action, %{data: struct}),
@@ -556,6 +546,7 @@ defmodule Ecto.Repo.Schema do
   end
 
   defp conflict_target({:constraint, constraint}, _dumper) when is_atom(constraint) do
+    # TODO: Remove this branch in future versions
     IO.warn "{:constraint, constraint} option for :conflict_target is deprecated, " <>
               "use {:unsafe_fragment, \"ON CONSTRAINT #{constraint}\" instead"
     {:constraint, constraint}
@@ -588,9 +579,6 @@ defmodule Ecto.Repo.Schema do
 
       :nothing ->
         {:nothing, [], conflict_target}
-
-      {:replace, keys} when is_list(keys) and conflict_target == [] ->
-        raise ArgumentError, ":conflict_target option is required when :on_conflict is replace"
 
       {:replace, keys} when is_list(keys) ->
         fields = Enum.map(keys, &field_source!(schema, &1))
@@ -703,45 +691,6 @@ defmodule Ecto.Repo.Schema do
       end
 
     %{changeset | errors: constraint_errors ++ errors, valid?: false}
-  end
-
-  defp surface_changes(%{changes: changes, types: types} = changeset, struct, fields) do
-    {changes, errors} =
-      Enum.reduce fields, {changes, []}, fn field, {changes, errors} ->
-        case {struct, changes, types} do
-          # User has explicitly changed it
-          {_, %{^field => _}, _} ->
-            {changes, errors}
-
-          # Handle associations specially
-          {_, _, %{^field => {tag, embed_or_assoc}}} when tag in [:assoc, :embed] ->
-            # This is partly reimplementing the logic behind put_relation
-            # in Ecto.Changeset but we need to do it in a way where we have
-            # control over the current value.
-            value = Relation.load!(struct, Map.get(struct, field))
-            empty = Relation.empty(embed_or_assoc)
-            case Relation.change(embed_or_assoc, value, empty) do
-              {:ok, change, _} when change != empty ->
-                {Map.put(changes, field, change), errors}
-              {:error, error} ->
-                {changes, [{field, error}]}
-              _ -> # :ignore or ok with change == empty
-                {changes, errors}
-            end
-
-          # Struct has a non nil value
-          {%{^field => value}, _, %{^field => _}} when value != nil ->
-            {Map.put(changes, field, value), errors}
-
-          {_, _, _} ->
-            {changes, errors}
-        end
-      end
-
-    case errors do
-      [] -> %{changeset | changes: changes}
-      _  -> %{changeset | errors: errors ++ changeset.errors, valid?: false, changes: changes}
-    end
   end
 
   defp load_changes(changeset, state, types, values, embeds, autogen, adapter, schema_meta) do

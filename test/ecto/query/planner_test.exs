@@ -81,6 +81,7 @@ defmodule Ecto.Query.PlannerTest do
       field :links, {:array, CustomPermalink}
       field :prefs, {:map, :string}
       field :payload, :map, load_in_query: false
+      field :status, Ecto.Enum, values: [:draft, :published, :deleted]
 
       embeds_one :meta, PostMeta
       embeds_many :metas, PostMeta
@@ -373,7 +374,7 @@ defmodule Ecto.Query.PlannerTest do
 
   test "plan: generates a cache key" do
     {_query, _params, key} = plan(from(Post, []))
-    assert key == [:all, {"posts", Post, 57100494, "my_prefix"}]
+    assert key == [:all, {"posts", Post, 71478254, "my_prefix"}]
 
     query =
       from(
@@ -394,7 +395,7 @@ defmodule Ecto.Query.PlannerTest do
                    {:prefix, "foo"},
                    {:where, [{:and, {:is_nil, [], [nil]}}, {:or, {:is_nil, [], [nil]}}]},
                    {:join, [{:inner, {"comments", Comment, 38292156, "world"}, true}]},
-                   {"posts", Post, 57100494, "hello"},
+                   {"posts", Post, 71478254, "hello"},
                    {:select, 1}]
   end
 
@@ -599,20 +600,21 @@ defmodule Ecto.Query.PlannerTest do
     test "on all" do
       {%{with_ctes: with_expr}, _, cache} =
         Comment
-        |> with_cte("cte", as: ^from(c in Comment))
+        |> with_cte("cte", as: ^put_query_prefix(Comment, "another"))
         |> plan()
       %{queries: [{"cte", query}]} = with_expr
-      assert query.sources == {{"comments", Comment, nil}}
+      assert query.sources == {{"comments", Comment, "another"}}
       assert %Ecto.Query.SelectExpr{expr: {:&, [], [0]}} = query.select
       assert [
         :all,
         {"comments", Comment, _, nil},
-        {:non_recursive_cte, "cte", [{"comments", Comment, _, nil}, {:select, {:&, _, [0]}}]}
+        {:non_recursive_cte, "cte",
+         [:all, {:prefix, "another"}, {"comments", Comment, _, nil}, {:select, {:&, _, [0]}}]}
       ] = cache
 
       {%{with_ctes: with_expr}, _, cache} =
         Comment
-        |> with_cte("cte", as: ^from(c in Comment, where: c in ^[1, 2, 3]))
+        |> with_cte("cte", as: ^(from(c in Comment, where: c in ^[1, 2, 3])))
         |> plan()
       %{queries: [{"cte", query}]} = with_expr
       assert query.sources == {{"comments", Comment, nil}}
@@ -637,6 +639,7 @@ defmodule Ecto.Query.PlannerTest do
           limit: ^500,
           select: [:id]
         )
+        |> put_query_prefix("another")
 
       {%{with_ctes: with_expr}, [500, "text"], cache} =
         Comment
@@ -647,11 +650,14 @@ defmodule Ecto.Query.PlannerTest do
         |> plan(:update_all)
 
       %{queries: [{"recent_comments", cte}]} = with_expr
-      assert {{"comments", Comment, nil}} = cte.sources
+      assert {{"comments", Comment, "another"}} = cte.sources
       assert %{expr: {:^, [], [0]}, params: [{500, :integer}]} = cte.limit
 
       assert [:update_all, _, _, _, _, {:non_recursive_cte, "recent_comments", cte_cache}] = cache
       assert [
+               :all,
+               {:prefix, "another"},
+               {:take, %{0 => {:any, [:id]}}},
                {:limit, {:^, [], [0]}},
                {:order_by, [[desc: _]]},
                {"comments", Comment, _, nil},
@@ -666,6 +672,7 @@ defmodule Ecto.Query.PlannerTest do
           limit: ^500,
           select: [:id]
         )
+        |> put_query_prefix("another")
 
       {%{with_ctes: with_expr}, [500, "text"], cache} =
         Comment
@@ -675,11 +682,14 @@ defmodule Ecto.Query.PlannerTest do
         |> plan(:delete_all)
 
       %{queries: [{"recent_comments", cte}]} = with_expr
-      assert {{"comments", Comment, nil}} = cte.sources
+      assert {{"comments", Comment, "another"}} = cte.sources
       assert %{expr: {:^, [], [0]}, params: [{500, :integer}]} = cte.limit
 
       assert [:delete_all, _, _, _, {:non_recursive_cte, "recent_comments", cte_cache}] = cache
       assert [
+               :all,
+               {:prefix, "another"},
+               {:take, %{0 => {:any, [:id]}}},
                {:limit, {:^, [], [0]}},
                {:order_by, [[desc: _]]},
                {"comments", Comment, _, nil},
@@ -712,6 +722,26 @@ defmodule Ecto.Query.PlannerTest do
 
     assert_raise Ecto.QueryError, fn ->
       Comment |> where([c], c.text == '123') |> normalize()
+    end
+  end
+
+  test "normalize: casts atom values" do
+    {_query, params, _key} = normalize_with_params(Post |> where([p], p.status == :draft))
+    assert params == []
+
+    {_query, params, _key} = normalize_with_params(Post |> where([p], p.status == ^:published))
+    assert params == ["published"]
+
+    assert_raise Ecto.QueryError, ~r/value `:atoms_are_not_strings` cannot be dumped to type :string/, fn ->
+      normalize(Post |> where([p], p.title == :atoms_are_not_strings))
+    end
+
+    assert_raise Ecto.QueryError, ~r/value `:unknown_status` cannot be dumped to type \{:parameterized, Ecto.Enum/, fn ->
+      normalize(Post |> where([p], p.status == :unknown_status))
+    end
+
+    assert_raise Ecto.Query.CastError, ~r/value `:pinned` in `where` cannot be cast to type {:parameterized, Ecto.Enum/, fn ->
+      normalize(Post |> where([p], p.status == ^:pinned))
     end
   end
 
@@ -945,21 +975,70 @@ defmodule Ecto.Query.PlannerTest do
     assert query.group_bys == []
   end
 
+  describe "normalize: CTEs" do
+    test "single-level" do
+      %{with_ctes: with_expr} =
+        Comment
+        |> with_cte("cte", as: ^from(c in "comments", select: %{id: c.id, text: c.text}))
+        |> normalize()
+      %{queries: [{"cte", query}]} = with_expr
+      assert query.sources == {{"comments", nil, nil}}
+      assert {:%{}, [], [id: _, text: _]} = query.select.expr
+      assert  [id: {{:., _, [{:&, _, [0]}, :id]}, _, []},
+               text: {{:., _, [{:&, _, [0]}, :text]}, _, []}] = query.select.fields
+
+      %{with_ctes: with_expr} =
+        Comment
+        |> with_cte("cte", as: ^(from(c in Comment, where: c in ^[1, 2, 3])))
+        |> normalize()
+      %{queries: [{"cte", query}]} = with_expr
+      assert query.sources == {{"comments", Comment, nil}}
+      assert {:&, [], [0]} = query.select.expr
+      assert  [{:id, {{:., _, [{:&, _, [0]}, :id]}, _, []}},
+               {:text, {{:., _, [{:&, _, [0]}, :text]}, _, []}},
+               _ | _] = query.select.fields
+    end
+
+    test "multi-level with select" do
+      sensors =
+        "sensors"
+        |> where(id: ^"id")
+        |> select([s], map(s, [:number]))
+
+      # There was a bug where the parameter in select would be reverted
+      # to ^0, this test aims to guarantee it remains ^1
+      agg_values =
+        "values"
+        |> with_cte("sensors_cte", as: ^sensors)
+        |> join(:inner, [v], s in "sensors_cte")
+        |> select([v, s], %{bucket: ^123 + v.number})
+
+      query =
+        "agg_values"
+        |> with_cte("agg_values", as: ^agg_values)
+        |> select([agg_v], agg_v.bucket)
+
+      query = normalize(query)
+      [{"agg_values", query}] = query.with_ctes.queries
+      assert Macro.to_string(query.select.fields) == "[bucket: ^1 + &0.number()]"
+    end
+  end
+
   test "normalize: select" do
     query = from(Post, []) |> normalize()
     assert query.select.expr ==
              {:&, [], [0]}
     assert query.select.fields ==
-           select_fields([:id, :post_title, :text, :code, :posted, :visits, :links, :prefs, :meta, :metas], 0)
+           select_fields([:id, :post_title, :text, :code, :posted, :visits, :links, :prefs, :status, :meta, :metas], 0)
 
     query = from(Post, []) |> select([p], {p, p.title, "Post"}) |> normalize()
     assert query.select.fields ==
-           select_fields([:id, :post_title, :text, :code, :posted, :visits, :links, :prefs, :meta, :metas], 0) ++
+           select_fields([:id, :post_title, :text, :code, :posted, :visits, :links, :prefs, :status, :meta, :metas], 0) ++
            [{{:., [type: :string], [{:&, [], [0]}, :post_title]}, [], []}]
 
     query = from(Post, []) |> select([p], {p.title, p, "Post"}) |> normalize()
     assert query.select.fields ==
-           select_fields([:id, :post_title, :text, :code, :posted, :visits, :links, :prefs, :meta, :metas], 0) ++
+           select_fields([:id, :post_title, :text, :code, :posted, :visits, :links, :prefs, :status, :meta, :metas], 0) ++
            [{{:., [type: :string], [{:&, [], [0]}, :post_title]}, [], []}]
 
     query =
@@ -969,7 +1048,7 @@ defmodule Ecto.Query.PlannerTest do
       |> select([p, _], {p.title, p})
       |> normalize()
     assert query.select.fields ==
-           select_fields([:id, :post_title, :text, :code, :posted, :visits, :links, :prefs, :meta, :metas], 0) ++
+           select_fields([:id, :post_title, :text, :code, :posted, :visits, :links, :prefs, :status, :meta, :metas], 0) ++
            select_fields([:id, :text, :posted, :uuid, :crazy_comment, :post_id, :crazy_post_id], 1) ++
            [{{:., [type: :string], [{:&, [], [0]}, :post_title]}, [], []}]
   end
@@ -1018,7 +1097,7 @@ defmodule Ecto.Query.PlannerTest do
       |> select([p, c], {p, struct(c, [:id, :text])})
       |> normalize()
     assert query.select.fields ==
-           select_fields([:id, :post_title, :text, :code, :posted, :visits, :links, :prefs, :meta, :metas], 0) ++
+           select_fields([:id, :post_title, :text, :code, :posted, :visits, :links, :prefs, :status, :meta, :metas], 0) ++
            select_fields([:id, :text], 1)
   end
 
@@ -1064,7 +1143,7 @@ defmodule Ecto.Query.PlannerTest do
       |> select([p, c], {p, map(c, [:id, :text])})
       |> normalize()
     assert query.select.fields ==
-           select_fields([:id, :post_title, :text, :code, :posted, :visits, :links, :prefs, :meta, :metas], 0) ++
+           select_fields([:id, :post_title, :text, :code, :posted, :visits, :links, :prefs, :status, :meta, :metas], 0) ++
            select_fields([:id, :text], 1)
   end
 
@@ -1153,16 +1232,6 @@ defmodule Ecto.Query.PlannerTest do
     message = ~r"`all` does not allow `update` expressions"
     assert_raise Ecto.QueryError, message, fn ->
       from(p in Post, update: [set: [name: "foo"]]) |> normalize(:all)
-    end
-  end
-
-  test "normalize: all does not allow bindings in order bys when having combinations" do
-    assert_raise Ecto.QueryError,  ~r"cannot use bindings in `order_by` when using `union_all`", fn ->
-      posts_query = from(post in Post, select: post.id)
-      posts_query
-      |> union_all(^posts_query)
-      |> order_by([post], post.id)
-      |> normalize(:all)
     end
   end
 

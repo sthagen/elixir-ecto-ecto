@@ -1,6 +1,7 @@
 defmodule Ecto.Changeset.Relation do
   @moduledoc false
 
+  require Logger
   alias Ecto.Changeset
   alias Ecto.Association.NotLoaded
 
@@ -219,13 +220,13 @@ defmodule Ecto.Changeset.Relation do
   def on_replace(%{on_replace: :raise, field: name, owner: owner}, _) do
     raise """
     you are attempting to change relation #{inspect name} of
-    #{inspect owner} but the `:on_replace` option of
-    this relation is set to `:raise`.
+    #{inspect owner} but the `:on_replace` option of this relation
+    is set to `:raise`.
 
     By default it is not possible to replace or delete embeds and
-    associations during `cast`. Therefore Ecto requires all existing
-    data to be given on update. Failing to do so results in this
-    error message.
+    associations during `cast`. Therefore Ecto requires the parameters
+    given to `cast` to have IDs matching the data currently associated
+    to #{inspect owner}. Failing to do so results in this error message.
 
     If you want to replace data or automatically delete any data
     not sent to `cast`, please set the appropriate `:on_replace`
@@ -281,7 +282,7 @@ defmodule Ecto.Changeset.Relation do
 
   defp cast_or_change(%{cardinality: :many} = relation, value, current, current_pks_fun, new_pks_fun, fun)
        when is_list(value) do
-    {current_pks, current_map} = process_current(current, current_pks_fun)
+    {current_pks, current_map} = process_current(current, current_pks_fun, relation)
     %{unique: unique, ordered: ordered} = relation
     ordered = if ordered, do: current_pks, else: []
     map_changes(value, new_pks_fun, fun, current_map, [], true, true, unique && %{}, ordered)
@@ -431,14 +432,26 @@ defmodule Ecto.Changeset.Relation do
   end
   defp key_as_int(key_val), do: key_val
 
-  defp process_current(nil, _get_pks),
+  defp process_current(nil, _get_pks, _relation),
     do: {[], %{}}
-  defp process_current(current, get_pks) do
-    Enum.map_reduce(current, %{}, fn struct, acc ->
-      pks = get_pks.(struct)
-      key = if pks == [], do: map_size(acc), else: pks
-      {pks, Map.put(acc, key, struct)}
-    end)
+  defp process_current(current, get_pks, relation) do
+    {pks, {map, counter}} =
+      Enum.map_reduce(current, {%{}, 0}, fn struct, {acc, counter} ->
+        pks = get_pks.(struct)
+        key = if pks == [], do: map_size(acc), else: pks
+        {pks, {Map.put(acc, key, struct), counter+ 1}}
+      end)
+
+    if map_size(map) != counter do
+      Logger.warn """
+      found duplicate primary keys for association/embed `#{inspect(relation.field)}` \
+      in `#{inspect(relation.owner)}`. In case of duplicate IDs, only the last entry \
+      with the same ID will be kept. Make sure that all entries in `#{inspect(relation.field)}` \
+      have an ID and the IDs are unique between them
+      """
+    end
+
+    {pks, map}
   end
 
   defp pop_current(current, pk_values) do
@@ -481,4 +494,45 @@ defmodule Ecto.Changeset.Relation do
 
   defp expected_type(%{cardinality: :one}), do: :map
   defp expected_type(%{cardinality: :many}), do: {:array, :map}
+
+  ## Surface changes on insert
+
+  def surface_changes(%{changes: changes, types: types} = changeset, struct, fields) do
+    {changes, errors} =
+      Enum.reduce fields, {changes, []}, fn field, {changes, errors} ->
+        case {struct, changes, types} do
+          # User has explicitly changed it
+          {_, %{^field => _}, _} ->
+            {changes, errors}
+
+          # Handle associations specially
+          {_, _, %{^field => {tag, embed_or_assoc}}} when tag in [:assoc, :embed] ->
+            # This is partly reimplementing the logic behind put_relation
+            # in Ecto.Changeset but we need to do it in a way where we have
+            # control over the current value.
+            value = load!(struct, Map.get(struct, field))
+            empty = empty(embed_or_assoc)
+            case change(embed_or_assoc, value, empty) do
+              {:ok, change, _} when change != empty ->
+                {Map.put(changes, field, change), errors}
+              {:error, error} ->
+                {changes, [{field, error}]}
+              _ -> # :ignore or ok with change == empty
+                {changes, errors}
+            end
+
+          # Struct has a non nil value
+          {%{^field => value}, _, %{^field => _}} when value != nil ->
+            {Map.put(changes, field, value), errors}
+
+          {_, _, _} ->
+            {changes, errors}
+        end
+      end
+
+    case errors do
+      [] -> %{changeset | changes: changes}
+      _  -> %{changeset | errors: errors ++ changeset.errors, valid?: false, changes: changes}
+    end
+  end
 end

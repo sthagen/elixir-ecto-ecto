@@ -2,6 +2,9 @@ defmodule Ecto.Embedded do
   @moduledoc false
   alias __MODULE__
   alias Ecto.Changeset
+  alias Ecto.Changeset.Relation
+
+  use Ecto.ParameterizedType
 
   @type t :: %Embedded{cardinality: :one | :many,
                        on_replace: :raise | :mark_as_invalid | :delete,
@@ -11,35 +14,117 @@ defmodule Ecto.Embedded do
                        related: atom,
                        unique: boolean}
 
-  @behaviour Ecto.Changeset.Relation
+  @behaviour Relation
   @on_replace_opts [:raise, :mark_as_invalid, :delete]
   @embeds_one_on_replace_opts @on_replace_opts ++ [:update]
-  defstruct [:cardinality, :field, :owner, :related, :on_cast, on_replace: :raise,
-             unique: true, ordered: true]
 
-  @doc """
-  Builds the embedded struct.
+  defstruct [
+    :cardinality,
+    :field,
+    :owner,
+    :related,
+    :on_cast,
+    on_replace: :raise,
+    unique: true,
+    ordered: true
+  ]
 
-  ## Options
+  ## Parameterized API
 
-    * `:cardinality` - tells if there is one embedded schema or many
-    * `:related` - name of the embedded schema
-    * `:on_replace` - the action taken on embeds when the embed is replaced
+  # We treat even embed_many as maps, as that's often the
+  # most efficient format to encode them in the database.
+  @impl Ecto.ParameterizedType
+  def type(_), do: {:map, :any}
 
-  """
-  def struct(module, name, opts) do
+  @impl Ecto.ParameterizedType
+  def init(opts) do
     opts = Keyword.put_new(opts, :on_replace, :raise)
     cardinality = Keyword.fetch!(opts, :cardinality)
-    on_replace_opts = if cardinality == :one, do: @embeds_one_on_replace_opts, else: @on_replace_opts
+
+    on_replace_opts =
+      if cardinality == :one, do: @embeds_one_on_replace_opts, else: @on_replace_opts
 
     unless opts[:on_replace] in on_replace_opts do
-      raise ArgumentError, "invalid `:on_replace` option for #{inspect name}. " <>
+      raise ArgumentError, "invalid `:on_replace` option for #{inspect Keyword.fetch!(opts, :field)}. " <>
         "The only valid options are: " <>
         Enum.map_join(@on_replace_opts, ", ", &"`#{inspect &1}`")
     end
 
-    struct(%Embedded{field: name, owner: module}, opts)
+    struct(%Embedded{}, opts)
   end
+
+  @impl Ecto.ParameterizedType
+  def load(nil, _fun, %{cardinality: :one}), do: {:ok, nil}
+
+  def load(value, fun, %{cardinality: :one, related: schema, field: field}) when is_map(value) do
+    {:ok, load(field, schema, value, fun)}
+  end
+
+  def load(nil, _fun, %{cardinality: :many}), do: {:ok, []}
+
+  def load(value, fun, %{cardinality: :many, related: schema, field: field}) when is_list(value) do
+    {:ok, Enum.map(value, &load(field, schema, &1, fun))}
+  end
+
+  def load(_value, _fun, _embed) do
+    :error
+  end
+
+  def load(_field, schema, value, loader) when is_map(value) do
+    Ecto.Schema.Loader.unsafe_load(schema, value, loader)
+  end
+
+  def load(field, _schema, value, _fun) do
+    raise ArgumentError, "cannot load embed `#{field}`, invalid value: #{inspect value}"
+  end
+
+  @impl Ecto.ParameterizedType
+  def dump(nil, _, _), do: {:ok, nil}
+
+  def dump(value, fun, %{cardinality: :one, related: schema, field: field}) when is_map(value) do
+    {:ok, dump(field, schema, value, schema.__schema__(:dump), fun)}
+  end
+
+  def dump(value, fun, %{cardinality: :many, related: schema, field: field}) when is_list(value) do
+    types = schema.__schema__(:dump)
+    {:ok, Enum.map(value, &dump(field, schema, &1, types, fun))}
+  end
+
+  def dump(_value, _fun, _embed) do
+    :error
+  end
+
+  def dump(_field, schema, %{__struct__: schema} = struct, types, dumper) do
+    Ecto.Schema.Loader.safe_dump(struct, types, dumper)
+  end
+
+  def dump(field, _schema, value, _types, _fun) do
+    raise ArgumentError, "cannot dump embed `#{field}`, invalid value: #{inspect value}"
+  end
+
+  @impl Ecto.ParameterizedType
+  def cast(nil, %{cardinality: :one}), do: {:ok, nil}
+  def cast(%{__struct__: schema} = struct, %{cardinality: :one, related: schema}) do
+    {:ok, struct}
+  end
+
+  def cast(nil, %{cardinality: :many}), do: {:ok, []}
+  def cast(value, %{cardinality: :many, related: schema}) when is_list(value) do
+    if Enum.all?(value, &Kernel.match?(%{__struct__: ^schema}, &1)) do
+      {:ok, value}
+    else
+      :error
+    end
+  end
+
+  def cast(_value, _embed) do
+    :error
+  end
+
+  @impl Ecto.ParameterizedType
+  def embed_as(_, _), do: :dump
+
+  ## End of parameterized API
 
   @doc """
   Callback invoked by repository to prepare embeds.
@@ -103,8 +188,10 @@ defmodule Ecto.Embedded do
     nil
   end
 
-  defp to_struct(%Changeset{} = changeset, action, %{related: schema}, adapter) do
-    %{data: struct, changes: changes} = changeset
+  defp to_struct(%Changeset{data: data} = changeset, action, %{related: schema}, adapter) do
+    %{data: struct, changes: changes} = changeset =
+      Relation.surface_changes(changeset, data, schema.__schema__(:fields))
+
     embeds = prepare(changeset, schema.__schema__(:embeds), adapter, action)
 
     changes
@@ -175,7 +262,7 @@ defmodule Ecto.Embedded do
   defp action_to_auto(:insert), do: :autogenerate
   defp action_to_auto(:update), do: :autoupdate
 
-  @impl true
+  @impl Relation
   def build(%Embedded{related: related}, _owner) do
     related.__struct__
   end

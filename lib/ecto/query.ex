@@ -49,6 +49,7 @@ defmodule Ecto.Query do
     * Booleans: `true`, `false`
     * Binaries: `<<1, 2, 3>>`
     * Strings: `"foo bar"`, `~s(this is a string)`
+    * Atoms (other than booleans and `nil`): `:foo`, `:bar`
     * Arrays: `[1, 2, 3]`, `~w(interpolate words)`
 
   All other types and dynamic values must be passed as a parameter using
@@ -236,6 +237,15 @@ defmodule Ecto.Query do
 
       child_query = from c in Comment, where: parent_as(:posts).id == c.post_id
       from p in Post, as: :posts, inner_lateral_join: c in subquery(child_query)
+  
+  When composing functions a common requirement is selecting a binding 
+  on the query. Previous examples showed means of hardcoding that selection,
+  but there are also ways of doing it dynamically.
+      
+      # Knowing the name of the binding
+      def sort(query, name, field) do
+        from [{^name, x}] in query, order_by: field(x, ^field)
+      end
 
   ### Bindingless operations
 
@@ -342,8 +352,7 @@ defmodule Ecto.Query do
 
       results =
         query # May be User or an Ecto.Query itself
-        |> Ecto.Queryable.to_query
-        |> Map.put(:prefix, "accounts")
+        |> Ecto.Query.put_query_prefix(:prefix, "accounts")
         |> Repo.all()
 
   Setting the prefix in the query changes the default prefix of all `from`
@@ -657,6 +666,17 @@ defmodule Ecto.Query do
           :inner_lateral_join, :left_lateral_join]
 
   @doc """
+  Puts the given prefix in a query.
+  """
+  def put_query_prefix(%Ecto.Query{} = query, prefix) when is_binary(prefix) do
+    %{query | prefix: prefix}
+  end
+
+  def put_query_prefix(other, prefix) do
+    other |> Ecto.Queryable.to_query() |> put_query_prefix(prefix)
+  end
+
+  @doc """
   Resets a previously set field on a query.
 
   It can reset many fields except the query source (`from`). When excluding
@@ -872,7 +892,7 @@ defmodule Ecto.Query do
   defp collect_as_and_prefix_and_hints([{:as, _} | _], _, _, _),
     do: Builder.error! "`as` keyword was given more than once to the same from/join"
   defp collect_as_and_prefix_and_hints([{:prefix, prefix} | t], as, nil, hints),
-    do: collect_as_and_prefix_and_hints(t, as, prefix, hints)
+    do: collect_as_and_prefix_and_hints(t, as, {:ok, prefix}, hints)
   defp collect_as_and_prefix_and_hints([{:prefix, _} | _], _, _, _),
     do: Builder.error! "`prefix` keyword was given more than once to the same from/join"
   defp collect_as_and_prefix_and_hints([{:hints, hints} | t], as, prefix, nil),
@@ -887,11 +907,12 @@ defmodule Ecto.Query do
 
   Receives a source that is to be joined to the query and a condition for
   the join. The join condition can be any expression that evaluates
-  to a boolean value. The join is by default an inner join, the qualifier
-  can be changed by giving the atoms: `:inner`, `:left`, `:right`, `:cross`,
-  `:full`, `:inner_lateral` or `:left_lateral`. For a keyword query the `:join`
-  keyword can be changed to: `:inner_join`, `:left_join`, `:right_join`,
-  `:cross_join`, `:full_join`, `:inner_lateral_join` or `:left_lateral_join`.
+  to a boolean value. The qualifier must be one of `:inner`, `:left`,
+  `:right`, `:cross`, `:full`, `:inner_lateral` or `:left_lateral`.
+
+  For a keyword query the `:join` keyword can be changed to `:inner_join`,
+  `:left_join`, `:right_join`, `:cross_join`, `:full_join`, `:inner_lateral_join`
+  or `:left_lateral_join`. `:join` is equivalent to `:inner_join`.
 
   Currently it is possible to join on:
 
@@ -1095,15 +1116,6 @@ defmodule Ecto.Query do
       |> group_by([p], p.id)
       |> select([p, c], %{p | category_names: fragment("ARRAY_AGG(?)", c.name)})
 
-  It's possible to cast CTE result rows as Ecto structs:
-
-      {"category_tree", Category}
-      |> recursive_ctes(true)
-      |> with_cte("category_tree", as: ^category_tree_query)
-      |> join(:left, [c], p in assoc(c, :products))
-      |> group_by([c], c.id)
-      |> select([c, p], %{c | products_count: count(p.id)})
-
   It's also possible to pass a raw SQL fragment:
 
       @raw_sql_category_tree \"""
@@ -1116,6 +1128,19 @@ defmodule Ecto.Query do
       |> recursive_ctes(true)
       |> with_cte("category_tree", as: fragment(@raw_sql_category_tree))
       |> join(:inner, [p], c in "category_tree", on: c.id == p.category_id)
+
+  If you don't have any Ecto schema pointing to the CTE table, you can pass a
+  tuple with the CTE table name as first element and an Ecto schema as second
+  element. This will cast the result rows to Ecto structs as long as the Ecto
+  schema maps to the same fields in the CTE table:
+
+      {"category_tree", Category}
+      |> recursive_ctes(true)
+      |> with_cte("category_tree", as: ^category_tree_query)
+      |> join(:left, [c], p in assoc(c, :products))
+      |> group_by([c], c.id)
+      |> select([c, p], %{c | products_count: count(p.id)})
+
 
   Keyword syntax is not supported for this feature.
 
@@ -1877,6 +1902,13 @@ defmodule Ecto.Query do
   The example above will issue two queries, one for loading posts and
   then another for loading the comments associated with the posts.
   Comments will be ordered by `published_at`.
+
+  When specifying a preload query, you can still preload the associations of
+  those records. For instance, you could preload an author's published posts and
+  the comments on those posts:
+
+      posts_query = from p in Post, where: p.state == :published
+      Repo.all from a in Author, preload: [posts: {posts_query, [:comments]}]
 
   Note: keep in mind operations like limit and offset in the preload
   query will affect the whole result set and not each association. For

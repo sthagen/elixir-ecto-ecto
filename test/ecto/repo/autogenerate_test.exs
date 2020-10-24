@@ -71,6 +71,62 @@ defmodule Ecto.Repo.AutogenerateTest do
     end
   end
 
+  defmodule ParameterizedTypePrefixedUUID do
+    use Ecto.ParameterizedType
+
+    @separator "_"
+
+    def init(opts), do: Enum.into(opts, %{})
+    def type(_), do: :uuid
+
+    def cast(data, %{prefix: prefix}) do
+      if String.starts_with?(data, [prefix <> @separator]) do
+        {:ok, data}
+      else
+        {:ok, prefix <> @separator <> data}
+      end
+    end
+
+    def load(uuid, _, %{prefix: prefix}), do: {:ok, prefix <> @separator <> uuid}
+
+    def dump(data, _, %{prefix: _prefix}),
+      do: {:ok, data |> String.split(@separator) |> List.last()}
+
+    def autogenerate(%{autogenerate: true, prefix: prefix, field: :code, schema: _}),
+      do: prefix <> @separator <> Ecto.UUID.generate()
+  end
+
+  defmodule ParameterizedTypePrefixedID do
+    use Ecto.ParameterizedType
+
+    @separator "_"
+
+    def init(opts), do: Enum.into(opts, %{})
+    def type(_), do: :id
+
+    def cast(data, %{prefix: prefix}) do
+      if String.starts_with?(data, [prefix <> @separator]) do
+        {:ok, data}
+      else
+        {:ok, prefix <> @separator <> data}
+      end
+    end
+
+    def load(id, _, %{prefix: prefix}), do: {:ok, prefix <> @separator <> to_string(id)}
+
+    def dump(data, _, %{prefix: _prefix}),
+      do: {:ok, data |> String.split(@separator) |> List.last() |> Integer.parse()}
+  end
+
+  defmodule ParameterizedTypeSchema do
+    use Ecto.Schema
+
+    @primary_key {:id, ParameterizedTypePrefixedID, autogenerate: true, prefix: "pk"}
+    schema "paramaeterized_type_schema" do
+      field :code, ParameterizedTypePrefixedUUID, autogenerate: true, prefix: "code"
+    end
+  end
+
   ## Autogenerate
 
   @uuid "30313233-3435-4637-9839-616263646566"
@@ -94,6 +150,11 @@ defmodule Ecto.Repo.AutogenerateTest do
     changeset = Ecto.Changeset.cast(%Company{}, %{code: @uuid}, [:code])
     schema = TestRepo.insert!(changeset)
     assert schema.code == @uuid
+
+    schema = TestRepo.insert!(%ParameterizedTypeSchema{})
+    assert "pk_" <> _id = schema.id
+    assert "code_" <> code_uuid = schema.code
+    assert byte_size(code_uuid) == 36
   end
 
   ## Timestamps

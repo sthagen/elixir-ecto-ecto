@@ -4,6 +4,7 @@ defmodule Ecto.Repo.Preloader do
   @moduledoc false
 
   require Ecto.Query
+  require Logger
 
   @doc """
   Transforms a result set based on query preloads, loading
@@ -15,7 +16,7 @@ defmodule Ecto.Repo.Preloader do
 
   def query(rows, repo_name, preloads, take, fun, opts) do
     rows
-    |> extract
+    |> extract()
     |> normalize_and_preload_each(repo_name, preloads, take, opts)
     |> unextract(rows, fun)
   end
@@ -86,8 +87,11 @@ defmodule Ecto.Repo.Preloader do
       {:ok, prefix} ->
         prefix
       :error ->
-        %{__meta__: %{prefix: prefix}} = sample
-        prefix
+        case sample do
+          %{__meta__: %{prefix: prefix}} -> prefix
+          # Must be an embedded schema
+          _ -> nil
+        end
     end
   end
 
@@ -119,11 +123,13 @@ defmodule Ecto.Repo.Preloader do
   defp maybe_pmap(preloaders, repo_name, opts) do
     if match?([_,_|_], preloaders) and not Ecto.Repo.Transaction.in_transaction?(repo_name) and
          Keyword.get(opts, :in_parallel, true) do
-      # We pass caller: self() so pools like the ownership
-      # pool knows where to fetch the connection from and
-      # set the proper timeouts.
-      # TODO: Remove this when we require Elixir v1.8+
+      # We pass caller: self() so the ownership pool knows where
+      # to fetch the connection from and set the proper timeouts.
+      # Note while the ownership pool uses '$callers' from pdict,
+      # it does not do so in automatic mode, hence this line is
+      # still necessary.
       opts = Keyword.put_new(opts, :caller, self())
+
       preloaders
       |> Task.async_stream(&(&1.(opts)), timeout: :infinity)
       |> Enum.map(fn {:ok, assoc} -> assoc end)
@@ -163,8 +169,7 @@ defmodule Ecto.Repo.Preloader do
         loaded? = Ecto.assoc_loaded?(value) and not force?
 
         if loaded? and is_nil(id) and not Ecto.Changeset.Relation.empty?(assoc, value) do
-          # TODO: Convert this to an error in future Ecto versions
-          IO.warn """
+          Logger.warn """
           association `#{field}` for `#{inspect(module)}` has a loaded value but \
           its association key `#{owner_key}` is nil. This usually means one of:
 
@@ -177,15 +182,13 @@ defmodule Ecto.Repo.Preloader do
 
         cond do
           card == :one and loaded? ->
-            {fetch_ids, [id|loaded_ids], [value|loaded_structs]}
+            {fetch_ids, [id | loaded_ids], [value | loaded_structs]}
           card == :many and loaded? ->
-            {fetch_ids,
-             List.duplicate(id, length(value)) ++ loaded_ids,
-             value ++ loaded_structs}
+            {fetch_ids, [{id, length(value)} | loaded_ids], value ++ loaded_structs}
           is_nil(id) ->
             {fetch_ids, loaded_ids, loaded_structs}
           true ->
-            {[id|fetch_ids], loaded_ids, loaded_structs}
+            {[id | fetch_ids], loaded_ids, loaded_structs}
         end
     end
   end
@@ -299,6 +302,10 @@ defmodule Ecto.Repo.Preloader do
     map
   end
 
+  defp many_assoc_map([{id, n}|ids], structs, map) do
+    {acc, structs} = split_n(structs, n, [])
+    many_assoc_map(ids, structs, Map.put(map, id, acc))
+  end
   defp many_assoc_map([id|ids], [struct|structs], map) do
     {ids, structs, acc} = split_while(ids, structs, id, [struct])
     many_assoc_map(ids, structs, Map.put(map, id, acc))
@@ -306,6 +313,9 @@ defmodule Ecto.Repo.Preloader do
   defp many_assoc_map([], [], map) do
     map
   end
+
+  defp split_n(structs, 0, acc), do: {acc, structs}
+  defp split_n([struct | structs], n, acc), do: split_n(structs, n - 1, [struct | acc])
 
   defp split_while([id|ids], [struct|structs], id, acc),
     do: split_while(ids, structs, id, [struct|acc])

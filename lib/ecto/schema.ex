@@ -31,6 +31,7 @@ defmodule Ecto.Schema do
         schema "users" do
           field :name, :string
           field :age, :integer, default: 0
+          field :password, :string, redact: true
           has_many :posts, Post
         end
       end
@@ -97,6 +98,13 @@ defmodule Ecto.Schema do
   `Ecto.Changeset` module, and afterwards, you can copy its data to
   the `Profile` and `Account` structs that will be persisted to the
   database with the help of `Ecto.Repo`.
+
+  ## Redacting fields
+
+  A field marked with `redact: true` will display a value of `**redacted**`
+  when inspected in changes inside a `Ecto.Changeset` and be excluded from
+  inspect on the schema unless the schema module is tagged with
+  the option `@ecto_derive_inspect_for_redacted_fields false`.
 
   ## Schema attributes
 
@@ -259,15 +267,14 @@ defmodule Ecto.Schema do
   Besides providing primitive types, Ecto allows custom types to be
   implemented by developers, allowing Ecto behaviour to be extended.
 
-  A custom type is a module that implements the `Ecto.Type` behaviour.
-  By default, Ecto provides the following custom types:
+  A custom type is a module that implements one of the `Ecto.Type`
+  or `Ecto.ParameterizedType` behaviours. By default, Ecto provides
+  the following custom types:
 
   Custom type             | Database type           | Elixir type
   :---------------------- | :---------------------- | :---------------------
-  `Ecto.UUID`             | `:uuid`                 | `uuid-string`
-
-  Read the `Ecto.Type` documentation for more information on implementing
-  your own types.
+  `Ecto.UUID`             | `:uuid` (as a binary)   | `string()` (as a UUID)
+  `Ecto.Enum`             | `:string`               | `atom()`
 
   Finally, schemas can also have virtual fields by passing the
   `virtual: true` option. These fields are not persisted to the database
@@ -402,8 +409,29 @@ defmodule Ecto.Schema do
 
   * `__schema__(:autogenerate_id)` - Primary key that is auto generated on insert;
 
+  * `__schema__(:redact_fields)` - Returns a list of redacted field names;
+
   Furthermore, both `__struct__` and `__changeset__` functions are
   defined so structs and changeset functionalities are available.
+
+  ## Working with typespecs
+
+  Generating typespecs for schemas is out of the scope of `Ecto.Schema`.
+
+  In order to be able to use types such as `User.t()`, `t/0` has to be defined manually:
+
+      defmodule User do
+        use Ecto.Schema
+
+        @type t :: %__MODULE__{
+          name: String.t(),
+          age: non_neg_integer()
+        }
+
+        # ... schema ...
+      end
+
+  Defining the type of each field is not mandatory, but it is preferable.
   """
 
   alias Ecto.Schema.Metadata
@@ -438,6 +466,8 @@ defmodule Ecto.Schema do
       Module.register_attribute(__MODULE__, :ecto_raw, accumulate: true)
       Module.register_attribute(__MODULE__, :ecto_autogenerate, accumulate: true)
       Module.register_attribute(__MODULE__, :ecto_autoupdate, accumulate: true)
+      Module.register_attribute(__MODULE__, :ecto_redact_fields, accumulate: true)
+      Module.put_attribute(__MODULE__, :ecto_derive_inspect_for_redacted_fields, true)
       Module.put_attribute(__MODULE__, :ecto_autogenerate_id, nil)
     end
   end
@@ -533,7 +563,13 @@ defmodule Ecto.Schema do
         field_sources = @ecto_field_sources |> Enum.reverse
         assocs = @ecto_assocs |> Enum.reverse
         embeds = @ecto_embeds |> Enum.reverse
+        redacted_fields = @ecto_redact_fields
         loaded = Ecto.Schema.__loaded__(__MODULE__, @struct_fields)
+
+        if redacted_fields != [] and not List.keymember?(@derive, Inspect, 0) and
+             @ecto_derive_inspect_for_redacted_fields do
+          @derive {Inspect, except: @ecto_redact_fields}
+        end
 
         defstruct @struct_fields
 
@@ -552,6 +588,7 @@ defmodule Ecto.Schema do
         def __schema__(:autogenerate), do: unquote(Macro.escape(autogenerate))
         def __schema__(:autoupdate), do: unquote(Macro.escape(autoupdate))
         def __schema__(:loaded), do: unquote(Macro.escape(loaded))
+        def __schema__(:redact_fields), do: unquote(redacted_fields)
 
         def __schema__(:query) do
           %Ecto.Query{
@@ -616,6 +653,10 @@ defmodule Ecto.Schema do
     * `:load_in_query` - When false, the field will not be loaded when
       selecting the whole struct in a query, such as `from p in Post, select: p`.
       Defaults to `true`.
+
+    * `:redact` - When true, it will display a value of `**redacted**`
+      when inspected in changes inside a `Ecto.Changeset` and be excluded
+      from inspect on the schema. Defaults to `false`.
 
   """
   defmacro field(name, type \\ :string, opts \\ []) do
@@ -1752,16 +1793,19 @@ defmodule Ecto.Schema do
 
   @doc false
   def __field__(mod, name, type, opts) do
-    check_field_type!(name, type, opts)
+    type = check_field_type!(mod, name, type, opts)
+    Module.put_attribute(mod, :changeset_fields, {name, type})
     define_field(mod, name, type, opts)
   end
 
   defp define_field(mod, name, type, opts) do
     virtual? = opts[:virtual] || false
     pk? = opts[:primary_key] || false
-
-    Module.put_attribute(mod, :changeset_fields, {name, type})
     put_struct_field(mod, name, Keyword.get(opts, :default))
+
+    if Keyword.get(opts, :redact, false) do
+      Module.put_attribute(mod, :ecto_redact_fields, name)
+    end
 
     unless virtual? do
       source = opts[:source] || Module.get_attribute(mod, :field_source_mapper).(name)
@@ -1992,11 +2036,12 @@ defmodule Ecto.Schema do
   ## Private
 
   defp embed(mod, cardinality, name, schema, opts) do
-    opts   = [cardinality: cardinality, related: schema] ++ opts
-    struct = Ecto.Embedded.struct(mod, name, opts)
+    opts   = [cardinality: cardinality, related: schema, owner: mod, field: name] ++ opts
+    struct = Ecto.Embedded.init(opts)
 
-    define_field(mod, name, {:embed, struct}, opts)
+    Module.put_attribute(mod, :changeset_fields, {name, {:embed, struct}})
     Module.put_attribute(mod, :ecto_embeds, {name, struct})
+    define_field(mod, name, {:parameterized, Ecto.Embedded, struct}, opts)
   end
 
   defp put_struct_field(mod, name, assoc) do
@@ -2010,33 +2055,42 @@ defmodule Ecto.Schema do
   end
 
   defp check_options!(opts, valid, fun_arity) do
-    case Enum.find(opts, fn {k, _} -> not(k in valid) end) do
-      {k, _} -> raise ArgumentError, "invalid option #{inspect k} for #{fun_arity}"
-      nil -> :ok
+    type = Keyword.get(opts, :type)
+
+    if is_atom(type) and Code.ensure_compiled(type) == {:module, type} and function_exported?(type, :type, 1) do
+      :ok
+    else
+      case Enum.find(opts, fn {k, _} -> not(k in valid) end) do
+        {k, _} -> raise ArgumentError, "invalid option #{inspect k} for #{fun_arity}"
+        nil -> :ok
+      end
     end
   end
 
-  defp check_field_type!(name, :datetime, _opts) do
+  defp check_field_type!(_mod, name, :datetime, _opts) do
     raise ArgumentError, "invalid type :datetime for field #{inspect name}. " <>
                            "You probably meant to choose one between :naive_datetime " <>
                            "(no time zone information) or :utc_datetime (time zone is set to UTC)"
   end
 
-  defp check_field_type!(name, {:embed, _}, _opts) do
-    raise ArgumentError, "cannot declare field #{inspect name} as embed. Use embeds_one/many instead"
-  end
-
-  defp check_field_type!(name, type, opts) do
+  defp check_field_type!(mod, name, type, opts) do
     cond do
       type == :any and !opts[:virtual] ->
         raise ArgumentError, "only virtual fields can have type :any, " <>
                              "invalid type for field #{inspect name}"
 
-      Ecto.Type.primitive?(type) ->
+      composite?(type, name) ->
+        {outer_type, inner_type} = type
+        {outer_type, check_field_type!(mod, name, inner_type, opts)}
+
+      Ecto.Type.base?(type) ->
         type
 
       is_atom(type) and Code.ensure_compiled(type) == {:module, type} and function_exported?(type, :type, 0) ->
         type
+
+      is_atom(type) and Code.ensure_compiled(type) == {:module, type} and function_exported?(type, :type, 1) ->
+        {:parameterized, type, type.init(Keyword.merge(opts, field: name, schema: mod))}
 
       is_atom(type) and function_exported?(type, :__schema__, 1) ->
         raise ArgumentError,
@@ -2048,28 +2102,44 @@ defmodule Ecto.Schema do
     end
   end
 
+  defp composite?({composite, _} = type, name) do
+    if Ecto.Type.composite?(composite) do
+      true
+    else
+      raise ArgumentError,
+        "invalid or unknown composite #{inspect type} for field #{inspect name}. " <>
+        "Did you mean to use array or map as first element of tuple instead?"
+    end
+  end
+
+  defp composite?(_type, _name), do: false
+
   defp store_mfa_autogenerate!(mod, name, type, mfa) do
-    if autogenerate_id(type) do
+    if autogenerate_id?(type) do
       raise ArgumentError, ":autogenerate with {m, f, a} not supported by ID types"
     end
 
     Module.put_attribute(mod, :ecto_autogenerate, {[name], mfa})
   end
 
+  defp store_type_autogenerate!(mod, name, source, {:parameterized, typemod, params} = type, pk?) do
+    cond do
+      store_autogenerate_id!(mod, name, source, type, pk?) ->
+        :ok
+
+      not function_exported?(typemod, :autogenerate, 1) ->
+        raise ArgumentError, "field #{inspect name} does not support :autogenerate because it uses a " <>
+                             "parameterized type #{inspect type} that does not define autogenerate/1"
+
+      true ->
+        Module.put_attribute(mod, :ecto_autogenerate, {[name], {typemod, :autogenerate, [params]}})
+    end
+  end
+
   defp store_type_autogenerate!(mod, name, source, type, pk?) do
     cond do
-      id = autogenerate_id(type) ->
-        cond do
-          not pk? ->
-            raise ArgumentError, "only primary keys allow :autogenerate for type #{inspect type}, " <>
-                                 "field #{inspect name} is not a primary key"
-
-          Module.get_attribute(mod, :ecto_autogenerate_id) ->
-            raise ArgumentError, "only one primary key with ID type may be marked as autogenerated"
-
-          true ->
-            Module.put_attribute(mod, :ecto_autogenerate_id, {name, source, id})
-        end
+      store_autogenerate_id!(mod, name, source, type, pk?) ->
+        :ok
 
       Ecto.Type.primitive?(type) ->
         raise ArgumentError, "field #{inspect name} does not support :autogenerate because it uses a " <>
@@ -2085,13 +2155,25 @@ defmodule Ecto.Schema do
     end
   end
 
-  defp autogenerate_id(type) do
-    id = if Ecto.Type.primitive?(type), do: type, else: type.type
+  defp store_autogenerate_id!(mod, name, source, type, pk?) do
+    cond do
+      not autogenerate_id?(type) ->
+        false
 
-    if id in [:id, :binary_id] do
-      type
+      not pk? ->
+        raise ArgumentError, "only primary keys allow :autogenerate for type #{inspect type}, " <>
+                             "field #{inspect name} is not a primary key"
+
+      Module.get_attribute(mod, :ecto_autogenerate_id) ->
+        raise ArgumentError, "only one primary key with ID type may be marked as autogenerated"
+
+      true ->
+        Module.put_attribute(mod, :ecto_autogenerate_id, {name, source, type})
+        true
     end
   end
+
+  defp autogenerate_id?(type), do: Ecto.Type.type(type) in [:id, :binary_id]
 
   defp expand_alias({:__aliases__, _, _} = ast, env),
     do: Macro.expand(ast, %{env | function: {:__schema__, 2}})

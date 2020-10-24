@@ -7,6 +7,12 @@ defmodule Ecto.QueryTest do
   import Ecto.Query
   alias Ecto.Query
 
+  defmodule Schema do
+    use Ecto.Schema
+    schema "schema" do
+    end
+  end
+
   defmacrop macro_equal(column, value) do
     quote do
       unquote(column) == unquote(value)
@@ -220,6 +226,13 @@ defmodule Ecto.QueryTest do
         comment = "comments"
         from([a, b] in comment, [])
       end
+    end
+  end
+
+  describe "put_query_prefix" do
+    test "stores prefix in query" do
+      assert put_query_prefix(from("posts"), "hello").prefix == "hello"
+      assert put_query_prefix(Schema, "hello").prefix == "hello"
     end
   end
 
@@ -450,10 +463,28 @@ defmodule Ecto.QueryTest do
   end
 
   describe "prefixes" do
+    defmodule Post do
+      use Ecto.Schema
+      @schema_prefix "another"
+      schema "posts" do
+      end
+    end
+
     test "are supported on from and join" do
       query = from "posts", prefix: "hello", join: "comments", prefix: "world"
       assert query.from.prefix == "hello"
       assert hd(query.joins).prefix == "world"
+    end
+
+    test "are supported and overriden from schemas" do
+      query = from(Post)
+      assert query.from.prefix == "another"
+
+      query = from(Post, prefix: "hello")
+      assert query.from.prefix == "hello"
+
+      query = from(Post, prefix: nil)
+      assert query.from.prefix == nil
     end
 
     test "are supported on dynamic from" do
@@ -832,12 +863,6 @@ defmodule Ecto.QueryTest do
   end
 
   describe "reverse_order/1" do
-    defmodule ReverseOrder do
-      use Ecto.Schema
-      schema "reverse_order" do
-      end
-    end
-
     test "reverses the order of a simple query" do
       order_bys = [asc: :inserted_at, desc: :id]
       reversed_order_bys = [desc: :inserted_at, asc: :id]
@@ -847,7 +872,7 @@ defmodule Ecto.QueryTest do
     end
 
     test "reverses by primary key with no order" do
-      q = from(p in ReverseOrder)
+      q = from(p in Schema)
       assert inspect(reverse_order(q)) == inspect(order_by(q, desc: :id))
     end
   end

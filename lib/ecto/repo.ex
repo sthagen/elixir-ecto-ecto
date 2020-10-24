@@ -51,7 +51,10 @@ defmodule Ecto.Repo do
       is based on the module name, so if your module is called
       `MyApp.Repo`, the prefix will be `[:my_app, :repo]`. See the
       "Telemetry Events" section to see which events we recommend
-      adapters to publish
+      adapters to publish. Note that if you have multiple databases, you
+      should keep the `:telemetry_prefix` consistent for each repo and
+      use the `:repo` property in the event metadata for distinguishing
+      between repos.
 
   ## URLs
 
@@ -303,69 +306,77 @@ defmodule Ecto.Repo do
       if Ecto.Adapter.Queryable in behaviours do
         if not @read_only do
           def update_all(queryable, updates, opts \\ []) do
-            Ecto.Repo.Queryable.update_all(get_dynamic_repo(), queryable, updates, opts)
+            Ecto.Repo.Queryable.update_all(get_dynamic_repo(), queryable, updates, with_default_options(:update_all, opts))
           end
 
           def delete_all(queryable, opts \\ []) do
-            Ecto.Repo.Queryable.delete_all(get_dynamic_repo(), queryable, opts)
+            Ecto.Repo.Queryable.delete_all(get_dynamic_repo(), queryable, with_default_options(:delete_all, opts))
           end
         end
 
         def all(queryable, opts \\ []) do
-          Ecto.Repo.Queryable.all(get_dynamic_repo(), queryable, opts)
+          Ecto.Repo.Queryable.all(get_dynamic_repo(), queryable, with_default_options(:all, opts))
         end
 
         def stream(queryable, opts \\ []) do
-          Ecto.Repo.Queryable.stream(get_dynamic_repo(), queryable, opts)
+          Ecto.Repo.Queryable.stream(get_dynamic_repo(), queryable, with_default_options(:stream, opts))
         end
 
         def get(queryable, id, opts \\ []) do
-          Ecto.Repo.Queryable.get(get_dynamic_repo(), queryable, id, opts)
+          Ecto.Repo.Queryable.get(get_dynamic_repo(), queryable, id, with_default_options(:all, opts))
         end
 
         def get!(queryable, id, opts \\ []) do
-          Ecto.Repo.Queryable.get!(get_dynamic_repo(), queryable, id, opts)
+          Ecto.Repo.Queryable.get!(get_dynamic_repo(), queryable, id, with_default_options(:all, opts))
         end
 
         def get_by(queryable, clauses, opts \\ []) do
-          Ecto.Repo.Queryable.get_by(get_dynamic_repo(), queryable, clauses, opts)
+          Ecto.Repo.Queryable.get_by(get_dynamic_repo(), queryable, clauses, with_default_options(:all, opts))
         end
 
         def get_by!(queryable, clauses, opts \\ []) do
-          Ecto.Repo.Queryable.get_by!(get_dynamic_repo(), queryable, clauses, opts)
+          Ecto.Repo.Queryable.get_by!(get_dynamic_repo(), queryable, clauses, with_default_options(:all, opts))
+        end
+
+        def reload(queryable, opts \\ []) do
+          Ecto.Repo.Queryable.reload(get_dynamic_repo(), queryable, opts)
+        end
+
+        def reload!(queryable, opts \\ []) do
+          Ecto.Repo.Queryable.reload!(get_dynamic_repo(), queryable, opts)
         end
 
         def one(queryable, opts \\ []) do
-          Ecto.Repo.Queryable.one(get_dynamic_repo(), queryable, opts)
+          Ecto.Repo.Queryable.one(get_dynamic_repo(), queryable, with_default_options(:all, opts))
         end
 
         def one!(queryable, opts \\ []) do
-          Ecto.Repo.Queryable.one!(get_dynamic_repo(), queryable, opts)
+          Ecto.Repo.Queryable.one!(get_dynamic_repo(), queryable, with_default_options(:all, opts))
         end
 
         def aggregate(queryable, aggregate, opts \\ [])
 
         def aggregate(queryable, aggregate, opts)
             when aggregate in [:count] and is_list(opts) do
-          Ecto.Repo.Queryable.aggregate(get_dynamic_repo(), queryable, aggregate, opts)
+          Ecto.Repo.Queryable.aggregate(get_dynamic_repo(), queryable, aggregate, with_default_options(:all, opts))
         end
 
         def aggregate(queryable, aggregate, field)
             when aggregate in @aggregates and is_atom(field) do
-          Ecto.Repo.Queryable.aggregate(get_dynamic_repo(), queryable, aggregate, field, [])
+          Ecto.Repo.Queryable.aggregate(get_dynamic_repo(), queryable, aggregate, field, with_default_options(:all, []))
         end
 
         def aggregate(queryable, aggregate, field, opts)
             when aggregate in @aggregates and is_atom(field) and is_list(opts) do
-          Ecto.Repo.Queryable.aggregate(get_dynamic_repo(), queryable, aggregate, field, opts)
+          Ecto.Repo.Queryable.aggregate(get_dynamic_repo(), queryable, aggregate, field, with_default_options(:all, opts))
         end
 
         def exists?(queryable, opts \\ []) do
-          Ecto.Repo.Queryable.exists?(get_dynamic_repo(), queryable, opts)
+          Ecto.Repo.Queryable.exists?(get_dynamic_repo(), queryable, with_default_options(:all, opts))
         end
 
         def preload(struct_or_structs_or_nil, preloads, opts \\ []) do
-          Ecto.Repo.Preloader.preload(struct_or_structs_or_nil, get_dynamic_repo(), preloads, opts)
+          Ecto.Repo.Preloader.preload(struct_or_structs_or_nil, get_dynamic_repo(), preloads, with_default_options(:preload, opts))
         end
 
         def prepare_query(operation, query, opts), do: {query, opts}
@@ -540,8 +551,9 @@ defmodule Ecto.Repo do
 
   ## Ecto.Adapter.Queryable
 
-  @optional_callbacks get: 3, get!: 3, get_by: 3, get_by!: 3, aggregate: 3, aggregate: 4, exists?: 2,
-                      one: 2, one!: 2, preload: 3, all: 2, stream: 2, update_all: 3, delete_all: 2
+  @optional_callbacks get: 3, get!: 3, get_by: 3, get_by!: 3, reload: 2, reload!: 2, aggregate: 3, 
+                      aggregate: 4, exists?: 2, one: 2, one!: 2, preload: 3, all: 2, stream: 2, 
+                      update_all: 3, delete_all: 2
 
   @doc """
   Fetches a single struct from the data store where the primary key matches the
@@ -653,6 +665,48 @@ defmodule Ecto.Repo do
               clauses :: Keyword.t() | map,
               opts :: Keyword.t()
             ) :: Ecto.Schema.t()
+
+  @doc """
+  Reloads a given schema or schema list from the database.
+
+  When using with lists, it is expected that all of the structs in the list belong
+  to the same schema. Ordering is guaranteed to be kept. Results not found in
+  the database will be returned as `nil`.
+
+  ## Example
+
+    MyRepo.reload(post)
+    %Post{}
+
+    MyRepo.reload([post1, post2])
+    [%Post{}, %Post{}]
+
+    MyRepo.reload([deleted_post, post1])
+    [nil, %Post{}]
+  """
+  @callback reload(
+              (schema :: Ecto.Schema.t()) | (schemas :: [Ecto.Schema.t()]),
+              opts :: Keyword.t()
+            ) :: Ecto.Schema.t() | [Ecto.Schema.t() | nil] | nil
+
+
+  @doc """
+  Similar to `c:reload/2`, but raises when something is not found.
+
+  When using with lists, ordering is guaranteed to be kept. 
+
+  ## Example
+
+    MyRepo.reload!(post)
+    %Post{}
+
+    MyRepo.reload!([post1, post2])
+    [%Post{}, %Post{}]
+  """
+  @callback reload!(
+              (schema :: Ecto.Schema.t()) | (schemas :: [Ecto.Schema.t()]),
+              opts :: Keyword.t()
+            ) :: Ecto.Schema.t() | [Ecto.Schema.t()]
 
   @doc """
   Calculate the given `aggregate`.
@@ -854,9 +908,9 @@ defmodule Ecto.Repo do
 
   ## Examples
 
-  Let's say you want to filter out records that were "soft-deleted" (have `deleted_at`
-  column set) from all operations unless an admin is running the query; you can define
-  the callback like this:
+  Let's say you want to filter out records that were "soft-deleted"
+  (have `deleted_at` column set) from all operations unless an admin
+  is running the query; you can define the callback like this:
 
       @impl true
       def prepare_query(_operation, query, opts) do
@@ -873,6 +927,9 @@ defmodule Ecto.Repo do
       Repo.all(query)              # only non-deleted records are returned
       Repo.all(query, admin: true) # all records are returned
 
+  The callback will be invoked for all queries, including queries
+  made from associations and preloads. It is not invoked for each
+  individual join inside a query.
   """
   @callback prepare_query(operation, query :: Ecto.Query.t(), opts :: Keyword.t()) ::
               {Ecto.Query.t(), Keyword.t()}
@@ -888,7 +945,9 @@ defmodule Ecto.Repo do
   query specific options, such as `:prefix`.
 
   This callback is invoked as the entry point for all repository
-  operations.
+  operations. For example, if you are executing a query with preloads,
+  this callback will be invoked once at the beginning, but the
+  options returned here will be passed to all following operations.
   """
   @callback default_options(operation) :: Keyword.t()
             when operation: :all | :insert_all | :update_all | :delete_all | :stream |
@@ -1104,13 +1163,16 @@ defmodule Ecto.Repo do
 
     * `:raise` - raises if there is a conflicting primary key or unique index
     * `:nothing` - ignores the error in case of conflicts
-    * `:replace_all` - replace all values on the existing row by the new entry,
-      including values not sent explicitly by Ecto, such as database defaults.
-      This option requires a schema
+    * `:replace_all` - replace **all** values on the existing row with the values
+      in the schema/changeset, including fields not explicitly set in the changeset,
+      such as IDs and autogenerated timestamps (`inserted_at` and `updated_at`).
+      Do not use this option if you have auto-incrementing primary keys, as they
+      will also be replaced. You most likely want to use `{:replace_all_except, [:id]}`
+      or `{:replace, fields}` explicitly instead. This option requires a schema
     * `{:replace_all_except, fields}` - same as above except the given fields
       are not replaced. This option requires a schema
     * `{:replace, fields}` - replace only specific columns. This option requires
-      `conflict_target`
+      `:conflict_target`
     * a keyword list of update instructions - such as the one given to
       `c:update_all/3`, for example: `[set: [title: "new title"]]`
     * an `Ecto.Query` that will act as an `UPDATE` statement, such as the
@@ -1121,15 +1183,19 @@ defmodule Ecto.Repo do
 
   ## Return values
 
-  By default, both Postgres and MySQL return the amount of entries
+  By default, both Postgres and MySQL will return the number of entries
   inserted on `c:insert_all/3`. However, when the `:on_conflict` option
-  is specified, Postgres will only return a row if it was affected
-  while MySQL returns at least the number of entries attempted.
-
-  For example, if `:on_conflict` is set to `:nothing`, Postgres will
-  return 0 if no new entry was added while MySQL will still return
-  the amount of entries attempted to be inserted, even if no entry
-  was added. Even worse, if `:on_conflict` is query, MySQL will return
+  is specified, Postgres and MySQL will return different results.
+  
+  Postgres will only count a row if it was affected and will
+  return 0 if no new entry was added.
+  
+  MySQL will return, at a minimum, the number of entries attempted. For example, 
+  if `:on_conflict` is set to `:nothing`, MySQL will return
+  the number of entries attempted to be inserted, even when no entry
+  was added. 
+  
+  Also note that if `:on_conflict` is a query, MySQL will return
   the number of attempted entries plus the number of entries modified
   by the UPDATE query.
   """
@@ -1203,14 +1269,16 @@ defmodule Ecto.Repo do
 
     * `:raise` - raises if there is a conflicting primary key or unique index
     * `:nothing` - ignores the error in case of conflicts
-    * `:replace_all` - replace all values on the existing row with the values
-      in the schema/changeset, including autogenerated fields such as `inserted_at`
-      and `updated_at`. Even fields that have not been explicitly set in the
-      changeset will be sent with their schema defaults
+    * `:replace_all` - replace **all** values on the existing row with the values
+      in the schema/changeset, including fields not explicitly set in the changeset,
+      such as IDs and autogenerated timestamps (`inserted_at` and `updated_at`).
+      Do not use this option if you have auto-incrementing primary keys, as they
+      will also be replaced. You most likely want to use `{:replace_all_except, [:id]}`
+      or `{:replace, fields}` explicitly instead. This option requires a schema
     * `{:replace_all_except, fields}` - same as above except the given fields are
-      not replaced
+      not replaced. This option requires a schema
     * `{:replace, fields}` - replace only specific columns. This option requires
-      conflict_target
+      `:conflict_target`
     * a keyword list of update instructions - such as the one given to
       `c:update_all/3`, for example: `[set: [title: "new title"]]`
     * an `Ecto.Query` that will act as an `UPDATE` statement, such as the

@@ -118,10 +118,10 @@ def filter(params) do
 end
 
 def filter_order_by("published_at_desc"),
-  do: dynamic([p], desc: p.published_at)
+  do: [desc: dynamic([p], p.published_at)]
 
 def filter_order_by("published_at"),
-  do: dynamic([p], p.published_at)
+  do: [asc: dynamic([p], p.published_at)]
 
 def filter_order_by(_),
   do: []
@@ -178,7 +178,7 @@ Our final solution would look like this:
 def filter(params) do
   Post
   # 1. Add named join binding
-  |> join([p], assoc(p, :authors), as: :authors)
+  |> join(:inner, [p], assoc(p, :authors), as: :authors)
   |> order_by(^filter_order_by(params["order_by"]))
   |> where(^filter_where(params))
 end

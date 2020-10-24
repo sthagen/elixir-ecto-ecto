@@ -97,6 +97,17 @@ defmodule Ecto.TypeTest do
     assert cast({:map, :integer}, 1) == :error
   end
 
+  test "array" do
+    assert load({:array, :integer}, [1]) == {:ok, [1]}
+    assert load({:array, :integer}, [1, nil]) == {:ok, [1, nil]}
+    assert dump({:array, :integer}, [2]) == {:ok, [2]}
+    assert dump({:array, :integer}, [2, nil]) == {:ok, [2, nil]}
+    assert cast({:array, :integer}, [3]) == {:ok, [3]}
+    assert cast({:array, :integer}, ["3"]) == {:ok, [3]}
+    assert cast({:array, :integer}, [3, nil]) == {:ok, [3, nil]}
+    assert cast({:array, :integer}, ["3", nil]) == {:ok, [3, nil]}
+  end
+
   test "custom types with array" do
     assert load({:array, Custom}, ["foo"]) == {:ok, [:load]}
     assert dump({:array, Custom}, ["foo"]) == {:ok, [:dump]}
@@ -179,6 +190,7 @@ defmodule Ecto.TypeTest do
     assert cast(:decimal, 1) == {:ok, Decimal.new("1")}
     assert cast(:decimal, Decimal.new("1")) == {:ok, Decimal.new("1")}
     assert cast(:decimal, "nan") == :error
+    assert cast(:decimal, "1.0bad") == :error
 
     assert_raise ArgumentError, ~r"#Decimal<NaN> is not allowed for type :decimal", fn ->
       cast(:decimal, Decimal.new("NaN"))
@@ -218,7 +230,7 @@ defmodule Ecto.TypeTest do
     test "one" do
       embed = %Ecto.Embedded{field: :embed, cardinality: :one,
                              owner: __MODULE__, related: Schema}
-      type  = {:embed, embed}
+      type  = {:parameterized, Ecto.Embedded, embed}
 
       assert {:ok, %Schema{id: @uuid_string, a: 1, c: 0}} =
              adapter_load(Ecto.TestAdapter, type, %{"id" => @uuid_binary, "abc" => 1})
@@ -233,13 +245,12 @@ defmodule Ecto.TypeTest do
       assert :error == cast(type, %{"a" => 1})
       assert cast(type, %Schema{}) == {:ok, %Schema{}}
       assert cast(type, nil) == {:ok, nil}
-      assert match?(:any, type)
     end
 
     test "many" do
       embed = %Ecto.Embedded{field: :embed, cardinality: :many,
                              owner: __MODULE__, related: Schema}
-      type  = {:embed, embed}
+      type  = {:parameterized, Ecto.Embedded, embed}
 
       assert {:ok, [%Schema{id: @uuid_string, a: 1, c: 0}]} =
              adapter_load(Ecto.TestAdapter, type, [%{"id" => @uuid_binary, "abc" => 1}])
@@ -254,7 +265,6 @@ defmodule Ecto.TypeTest do
       assert cast(type, [%{"abc" => 1}]) == :error
       assert cast(type, [%Schema{}]) == {:ok, [%Schema{}]}
       assert cast(type, []) == {:ok, []}
-      assert match?({:array, :any}, type)
     end
   end
 
@@ -938,11 +948,6 @@ defmodule Ecto.TypeTest do
       refute Ecto.Type.equal?(Custom, false, false)
     end
 
-    test "nil type" do
-      assert Ecto.Type.equal?(nil, 1, 1.0)
-      refute Ecto.Type.equal?(nil, 1, 2)
-    end
-
     test "nil values" do
       assert Ecto.Type.equal?(:any, nil, nil)
       assert Ecto.Type.equal?(:boolean, nil, nil)
@@ -969,12 +974,6 @@ defmodule Ecto.TypeTest do
       assert Ecto.Type.equal?({:map, :time}, term, term)
 
       assert Ecto.Type.equal?(Custom, nil, nil)
-    end
-
-    test "bad type" do
-      assert_raise ArgumentError, ~r"cannot use :foo as Ecto.Type", fn ->
-        Ecto.Type.equal?(:foo, 1, 1.0)
-      end
     end
   end
 

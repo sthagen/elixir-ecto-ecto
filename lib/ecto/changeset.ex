@@ -101,7 +101,7 @@ defmodule Ecto.Changeset do
   transaction.
 
   ## Empty values
-
+  
   Many times, the data given on cast needs to be further pruned, specially
   regarding empty values. For example, if you are gathering data to be
   cast from the command line or through an HTML form or any other text-based
@@ -109,7 +109,8 @@ defmodule Ecto.Changeset do
   those reasons, changesets include the concept of empty values, which are
   values that will be automatically converted to the field's default value
   on `cast/4`. Those values are stored in the changeset `empty_values` field
-  and default to `[""]`.
+  and default to `[""]`. You can also pass the `:empty_values` option to
+  `cast/4` in case you want to change how a particular `cast/4` work.
 
   ## Associations, embeds and on replace
 
@@ -255,6 +256,11 @@ defmodule Ecto.Changeset do
     * `filters`
     * `prepare`
 
+  ### Redacting fields in inspect
+
+  To hide a fields value from the inspect protocol of `Ecto.Changeset`, mark
+  the field as `redact: true` in the schema, and it will display with the
+  value `**redacted**`.
   """
 
   require Ecto.Query
@@ -264,7 +270,7 @@ defmodule Ecto.Changeset do
   @empty_values [""]
 
   # If a new field is added here, def merge must be adapted
-  defstruct valid?: false, data: nil, params: nil, changes: %{}, repo_changes: %{},
+  defstruct valid?: false, data: nil, params: nil, changes: %{},
             errors: [], validations: [], required: [], prepare: [],
             constraints: [], filters: %{}, action: nil, types: nil,
             empty_values: @empty_values, repo: nil, repo_opts: []
@@ -273,15 +279,14 @@ defmodule Ecto.Changeset do
                         repo: atom | nil,
                         repo_opts: Keyword.t,
                         data: data_type,
-                        params: %{String.t => term} | nil,
-                        changes: %{atom => term},
-                        repo_changes: %{atom => term},
+                        params: %{optional(String.t) => term} | nil,
+                        changes: %{optional(atom) => term},
                         required: [atom],
                         prepare: [(t -> t)],
                         errors: [{atom, error}],
                         constraints: [constraint],
                         validations: [{atom, term}],
-                        filters: %{atom => term},
+                        filters: %{optional(atom) => term},
                         action: action,
                         types: nil | %{atom => Ecto.Type.t}}
 
@@ -415,7 +420,7 @@ defmodule Ecto.Changeset do
   ## Options
 
     * `:empty_values` - a list of values to be considered as empty when casting.
-      Defaults to the changeset value, which defaults to `[""]`
+      All empty values are discarded on cast. Defaults to `[""]`
 
   ## Examples
 
@@ -477,15 +482,14 @@ defmodule Ecto.Changeset do
     cast(data, module.__changeset__(), %{}, params, permitted, opts)
   end
 
-  defp cast(%{} = data, %{} = types, %{} = changes, :invalid, permitted, opts) when is_list(permitted) do
-    {empty_values, _opts} = Keyword.pop(opts, :empty_values, @empty_values)
+  defp cast(%{} = data, %{} = types, %{} = changes, :invalid, permitted, _opts) when is_list(permitted) do
     _ = Enum.each(permitted, &cast_key/1)
     %Changeset{params: nil, data: data, valid?: false, errors: [],
-               changes: changes, types: types, empty_values: empty_values}
+               changes: changes, types: types}
   end
 
   defp cast(%{} = data, %{} = types, %{} = changes, %{} = params, permitted, opts) when is_list(permitted) do
-    {empty_values, _opts} = Keyword.pop(opts, :empty_values, @empty_values)
+    empty_values = Keyword.get(opts, :empty_values, @empty_values)
     params = convert_params(params)
 
     defaults = case data do
@@ -498,8 +502,7 @@ defmodule Ecto.Changeset do
                   &process_param(&1, params, types, data, empty_values, defaults, &2))
 
     %Changeset{params: params, data: data, valid?: valid?,
-               errors: Enum.reverse(errors), changes: changes,
-               types: types, empty_values: empty_values}
+               errors: Enum.reverse(errors), changes: changes, types: types}
   end
 
   defp cast(%{}, %{}, %{}, params, permitted, _opts) when is_list(permitted) do
@@ -509,7 +512,7 @@ defmodule Ecto.Changeset do
 
   defp process_param(key, params, types, data, empty_values, defaults, {changes, errors, valid?}) do
     {key, param_key} = cast_key(key)
-    type = type!(types, key)
+    type = cast_type!(types, key)
 
     current =
       case changes do
@@ -532,7 +535,7 @@ defmodule Ecto.Changeset do
     end
   end
 
-  defp type!(types, key) do
+  defp cast_type!(types, key) do
     case types do
       %{^key => {tag, _}} when tag in @relations ->
         raise "casting #{tag}s with cast/4 for #{inspect key} field is not supported, use cast_#{tag}/3 instead"
@@ -601,12 +604,12 @@ defmodule Ecto.Changeset do
       |> Enum.reduce(nil, fn
         {key, _value}, nil when is_binary(key) ->
           nil
-  
+
         {key, _value}, _ when is_binary(key) ->
           raise Ecto.CastError, type: :map, value: params,
                                 message: "expected params to be a map with atoms or string keys, " <>
                                          "got a map with mixed keys: #{inspect params}"
-  
+
         {key, value}, nil when is_atom(key) ->
           [{Atom.to_string(key), value}]
 
@@ -626,11 +629,14 @@ defmodule Ecto.Changeset do
   Casts the given association with the changeset parameters.
 
   This function should be used when working with the entire association at
-  once (and not a single element of a many-style association) and using data
-  external to the application.
+  once (and not a single element of a many-style association) and receiving
+  data external to the application.
 
-  `cast_assoc/3` works matching the records extracted from the database (preload)
-  and compares it with the parameters provided from an external source.
+  `cast_assoc/3` works matching the records extracted from the database
+  and compares it with the parameters received from an external source.
+  Therefore, it is expected that the data in the changeset has explicitly
+  preloaded the association being cast and that all of the IDs exist and
+  are unique.
 
   For example, imagine a user has many addresses relationship where
   post data is sent as follows
@@ -928,11 +934,10 @@ defmodule Ecto.Changeset do
     new_filters     = Map.merge(cs1.filters, cs2.filters)
     new_validations = cs1.validations ++ cs2.validations
     new_constraints = cs1.constraints ++ cs2.constraints
-    new_empty_vals  = Enum.uniq(cs1.empty_values ++ cs2.empty_values)
 
     cast_merge %{cs1 | repo: new_repo, repo_opts: new_repo_opts, filters: new_filters,
                        action: new_action, validations: new_validations,
-                       constraints: new_constraints, empty_values: new_empty_vals}, cs2
+                       constraints: new_constraints}, cs2
   end
 
   def merge(%Changeset{}, %Changeset{}) do
@@ -1853,9 +1858,7 @@ defmodule Ecto.Changeset do
 
       query =
         if prefix = opts[:prefix] do
-          query
-          |> Ecto.Queryable.to_query
-          |> Map.put(:prefix, prefix)
+          Ecto.Query.put_query_prefix(query, prefix)
         else
           query
         end
@@ -2363,9 +2366,12 @@ defmodule Ecto.Changeset do
     changeset = change(data_or_changeset, %{})
     current = get_field(changeset, field)
 
-    # repo_changes are applied only inside the repo and merged in case of success.
-    # This is important because we don't want to permanently track the lock change.
-    changeset = put_in(changeset.repo_changes[field], incrementer.(current))
+    # Apply these changes only inside the repo because we
+    # don't want to permanently track the lock change.
+    changeset = prepare_changes(changeset, fn changeset ->
+      put_in(changeset.changes[field], incrementer.(current))
+    end)
+
     changeset = put_in(changeset.filters[field], current)
     changeset
   end
@@ -2929,14 +2935,19 @@ end
 defimpl Inspect, for: Ecto.Changeset do
   import Inspect.Algebra
 
-  def inspect(changeset, opts) do
+  def inspect(%Ecto.Changeset{data: data} = changeset, opts) do
     list = for attr <- [:action, :changes, :errors, :data, :valid?] do
       {attr, Map.get(changeset, attr)}
     end
 
+    redacted_fields = case data do
+      %type{__meta__: _} -> type.__schema__(:redact_fields)
+      _ -> []
+    end
+
     container_doc("#Ecto.Changeset<", list, ">", opts, fn
       {:action, action}, opts   -> concat("action: ", to_doc(action, opts))
-      {:changes, changes}, opts -> concat("changes: ", to_doc(changes, opts))
+      {:changes, changes}, opts -> concat("changes: ", changes |> filter(redacted_fields) |> to_doc(opts))
       {:data, data}, _opts      -> concat("data: ", to_struct(data, opts))
       {:errors, errors}, opts   -> concat("errors: ", to_doc(errors, opts))
       {:valid?, valid?}, opts   -> concat("valid?: ", to_doc(valid?, opts))
@@ -2945,4 +2956,14 @@ defimpl Inspect, for: Ecto.Changeset do
 
   defp to_struct(%{__struct__: struct}, _opts), do: "#" <> Kernel.inspect(struct) <> "<>"
   defp to_struct(other, opts), do: to_doc(other, opts)
+
+  defp filter(changes, redacted_fields) do
+    Enum.reduce(redacted_fields, changes, fn redacted_field, changes ->
+      if Map.has_key?(changes, redacted_field) do
+        Map.put(changes, redacted_field, "**redacted**")
+      else
+        changes
+      end
+    end)
+  end
 end

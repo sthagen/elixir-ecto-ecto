@@ -1,15 +1,16 @@
 defmodule Ecto.MixProject do
   use Mix.Project
 
-  @version "3.4.5"
+  @version "3.5.3"
 
   def project do
     [
       app: :ecto,
       version: @version,
-      elixir: "~> 1.7",
+      elixir: "~> 1.8",
       deps: deps(),
       consolidate_protocols: Mix.env() != :test,
+      elixirc_paths: elixirc_paths(Mix.env()),
 
       # Hex
       description: "A toolkit for data mapping and language integrated query for Elixir",
@@ -66,10 +67,14 @@ defmodule Ecto.MixProject do
         # Ecto.Repo,
         # Ecto.Schema,
         # Ecto.Schema.Metadata,
-        # Ecto.Type,
-        # Ecto.UUID,
         # Mix.Ecto,
 
+        "Types": [
+          Ecto.Enum,
+          Ecto.ParameterizedType,
+          Ecto.Type,
+          Ecto.UUID
+        ],
         "Query APIs": [
           Ecto.Query.API,
           Ecto.Query.WindowAPI,
@@ -104,6 +109,7 @@ defmodule Ecto.MixProject do
       "guides/howtos/Data mapping and validation.md",
       "guides/howtos/Dynamic queries.md",
       "guides/howtos/Multi tenancy with query prefixes.md",
+      "guides/howtos/Multi tenancy with foreign keys.md",
       "guides/howtos/Polymorphic associations with many to many.md",
       "guides/howtos/Replicas and dynamic repositories.md",
       "guides/howtos/Schemaless queries.md",
@@ -117,4 +123,7 @@ defmodule Ecto.MixProject do
       "How-To's": ~r/guides\/howtos\/.?/
     ]
   end
+
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
 end

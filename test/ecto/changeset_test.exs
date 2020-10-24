@@ -55,6 +55,10 @@ defmodule Ecto.ChangesetTest do
     end
   end
 
+  defmodule NoSchemaPost do
+    defstruct [:title, :upvotes]
+  end
+
   defp changeset(schema \\ %Post{}, params) do
     cast(schema, params, ~w(id token title body upvotes decimal color topics virtual)a)
   end
@@ -138,7 +142,7 @@ defmodule Ecto.ChangesetTest do
 
     changeset = cast(struct, params, ~w(title body)a, empty_values: ["empty"])
     assert changeset.changes == %{title: "", body: nil}
-    assert changeset.empty_values == ["empty"]
+    assert changeset.empty_values == [""]
   end
 
   test "cast/4: with matching empty values" do
@@ -160,6 +164,19 @@ defmodule Ecto.ChangesetTest do
     assert changeset.errors == []
     assert changeset.valid?
     assert apply_changes(changeset) == %{title: "world", upvotes: 0}
+  end
+
+  test "cast/4: with data struct and types" do
+    data   = {%NoSchemaPost{title: "hello"}, %{title: :string, upvotes: :integer}}
+    params = %{"title" => "world", "upvotes" => "0"}
+
+    changeset = cast(data, params, ~w(title upvotes)a)
+    assert changeset.params == params
+    assert changeset.data  == %NoSchemaPost{title: "hello"}
+    assert changeset.changes == %{title: "world", upvotes: 0}
+    assert changeset.errors == []
+    assert changeset.valid?
+    assert apply_changes(changeset) == %NoSchemaPost{title: "world", upvotes: 0}
   end
 
   test "cast/4: with dynamic embed" do
@@ -1466,39 +1483,50 @@ defmodule Ecto.ChangesetTest do
 
   ## Locks
 
+  defp prepared_changes(changeset) do
+    Enum.reduce(changeset.prepare, changeset, & &1.(&2)).changes
+  end
+
   test "optimistic_lock/3 with changeset with default incremeter" do
     changeset = changeset(%{}) |> optimistic_lock(:upvotes)
     assert changeset.filters == %{upvotes: 0}
-    assert changeset.repo_changes == %{upvotes: 1}
+    assert changeset.changes == %{}
+    assert prepared_changes(changeset) == %{upvotes: 1}
 
     changeset = changeset(%Post{upvotes: 2}, %{upvotes: 1}) |> optimistic_lock(:upvotes)
     assert changeset.filters == %{upvotes: 1}
-    assert changeset.repo_changes == %{upvotes: 2}
+    assert changeset.changes == %{upvotes: 1}
+    assert prepared_changes(changeset) == %{upvotes: 2}
 
     # Assert default increment will rollover to 1 when the current one is equal or graeter than 2_147_483_647
     changeset = changeset(%Post{upvotes: 2_147_483_647}, %{}) |> optimistic_lock(:upvotes)
     assert changeset.filters == %{upvotes: 2_147_483_647}
-    assert changeset.repo_changes == %{upvotes: 1}
+    assert changeset.changes == %{}
+    assert prepared_changes(changeset) == %{upvotes: 1}
 
     changeset = changeset(%Post{upvotes: 3_147_483_647}, %{}) |> optimistic_lock(:upvotes)
     assert changeset.filters == %{upvotes: 3_147_483_647}
-    assert changeset.repo_changes == %{upvotes: 1}
+    assert changeset.changes == %{}
+    assert prepared_changes(changeset) == %{upvotes: 1}
 
     changeset = changeset(%Post{upvotes: 2_147_483_647}, %{upvotes: 2_147_483_648}) |> optimistic_lock(:upvotes)
     assert changeset.filters == %{upvotes: 2_147_483_648}
-    assert changeset.repo_changes == %{upvotes: 1}
+    assert changeset.changes == %{upvotes: 2_147_483_648}
+    assert prepared_changes(changeset) == %{upvotes: 1}
  end
 
   test "optimistic_lock/3 with struct" do
     changeset = %Post{} |> optimistic_lock(:upvotes)
     assert changeset.filters == %{upvotes: 0}
-    assert changeset.repo_changes == %{upvotes: 1}
+    assert changeset.changes == %{}
+    assert prepared_changes(changeset) == %{upvotes: 1}
   end
 
   test "optimistic_lock/3 with custom incrementer" do
     changeset = %Post{} |> optimistic_lock(:upvotes, &(&1 - 1))
     assert changeset.filters == %{upvotes: 0}
-    assert changeset.repo_changes == %{upvotes: -1}
+    assert changeset.changes == %{}
+    assert prepared_changes(changeset) == %{upvotes: -1}
   end
 
   ## Constraints
@@ -1746,12 +1774,56 @@ defmodule Ecto.ChangesetTest do
 
   ## inspect
 
-  test "inspects relevant data" do
-    assert inspect(%Ecto.Changeset{}) ==
-           "#Ecto.Changeset<action: nil, changes: %{}, errors: [], data: nil, valid?: false>"
+  defmodule RedactedSchema do
+    use Ecto.Schema
 
-    assert inspect(changeset(%{"title" => "title", "body" => "hi"})) ==
-           "#Ecto.Changeset<action: nil, changes: %{body: \"hi\", title: \"title\"}, " <>
-           "errors: [], data: #Ecto.ChangesetTest.Post<>, valid?: true>"
+    schema "redacted_schema" do
+      field :password, :string, redact: true
+      field :username, :string
+      field :display_name, :string, redact: false
+      field :virtual_pass, :string, redact: true, virtual: true
+    end
+  end
+
+  describe "inspect" do
+    test "reveals relevant data" do
+      assert inspect(%Ecto.Changeset{}) ==
+            "#Ecto.Changeset<action: nil, changes: %{}, errors: [], data: nil, valid?: false>"
+
+      assert inspect(changeset(%{"title" => "title", "body" => "hi"})) ==
+            "#Ecto.Changeset<action: nil, changes: %{body: \"hi\", title: \"title\"}, " <>
+            "errors: [], data: #Ecto.ChangesetTest.Post<>, valid?: true>"
+
+      data   = {%NoSchemaPost{title: "hello"}, %{title: :string, upvotes: :integer}}
+      params = %{"title" => "world", "upvotes" => "0"}
+
+      assert inspect(cast(data, params, ~w(title upvotes)a)) ==
+               "#Ecto.Changeset<action: nil, changes: %{title: \"world\", upvotes: 0}, " <>
+               "errors: [], data: #Ecto.ChangesetTest.NoSchemaPost<>, valid?: true>"
+    end
+
+    test "redacts fields marked redact: true" do
+      changeset = Ecto.Changeset.cast(%RedactedSchema{}, %{password: "hunter2"}, [:password])
+      refute inspect(changeset) =~ "hunter2"
+      assert inspect(changeset) =~ "**redacted**"
+    end
+
+    test "redacts virtual fields marked redact: true" do
+      changeset = Ecto.Changeset.cast(%RedactedSchema{}, %{virtual_pass: "hunter2"}, [:virtual_pass])
+      refute inspect(changeset) =~ "hunter2"
+      assert inspect(changeset) =~ "**redacted**"
+    end
+
+    test "doesn't redact fields without redacted (defaults to false)" do
+      changeset = Ecto.Changeset.cast(%RedactedSchema{}, %{username: "hunter2"}, [:username])
+      assert inspect(changeset) =~ "hunter2"
+      refute inspect(changeset) =~ "**redacted**"
+    end
+
+    test "doesn't redact fields marked redact: false" do
+      changeset = Ecto.Changeset.cast(%RedactedSchema{}, %{display_name: "hunter2"}, [:display_name])
+      assert inspect(changeset) =~ "hunter2"
+      refute inspect(changeset) =~ "**redacted**"
+    end
   end
 end

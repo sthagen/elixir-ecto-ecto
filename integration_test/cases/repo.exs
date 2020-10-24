@@ -269,15 +269,19 @@ defmodule Ecto.Integration.RepoTest do
 
   test "optimistic locking in update/delete operations" do
     import Ecto.Changeset, only: [cast: 3, optimistic_lock: 2]
-    base_post = TestRepo.insert!(%Comment{})
+    base_comment = TestRepo.insert!(%Comment{})
 
     changeset_ok =
-      base_post
+      base_comment
       |> cast(%{"text" => "foo.bar"}, ~w(text)a)
       |> optimistic_lock(:lock_version)
     TestRepo.update!(changeset_ok)
 
-    changeset_stale = optimistic_lock(base_post, :lock_version)
+    changeset_stale =
+      base_comment
+      |> cast(%{"text" => "foo.bat"}, ~w(text)a)
+      |> optimistic_lock(:lock_version)
+
     assert_raise Ecto.StaleEntryError, fn -> TestRepo.update!(changeset_stale) end
     assert_raise Ecto.StaleEntryError, fn -> TestRepo.delete!(changeset_stale) end
   end
@@ -285,7 +289,7 @@ defmodule Ecto.Integration.RepoTest do
   test "optimistic locking in update operation with nil field" do
     import Ecto.Changeset, only: [cast: 3, optimistic_lock: 3]
 
-    base_post =
+    base_comment =
       %Comment{}
       |> cast(%{lock_version: nil}, [:lock_version])
       |> TestRepo.insert!()
@@ -297,7 +301,7 @@ defmodule Ecto.Integration.RepoTest do
       end
 
     changeset_ok =
-      base_post
+      base_comment
       |> cast(%{"text" => "foo.bar"}, ~w(text)a)
       |> optimistic_lock(:lock_version, incrementer)
 
@@ -309,7 +313,7 @@ defmodule Ecto.Integration.RepoTest do
   test "optimistic locking in delete operation with nil field" do
     import Ecto.Changeset, only: [cast: 3, optimistic_lock: 3]
 
-    base_post =
+    base_comment =
       %Comment{}
       |> cast(%{lock_version: nil}, [:lock_version])
       |> TestRepo.insert!()
@@ -320,10 +324,10 @@ defmodule Ecto.Integration.RepoTest do
         old_value -> old_value + 1
       end
 
-    changeset_ok = optimistic_lock(base_post, :lock_version, incrementer)
+    changeset_ok = optimistic_lock(base_comment, :lock_version, incrementer)
     TestRepo.delete!(changeset_ok)
 
-    refute TestRepo.get(Comment, base_post.id)
+    refute TestRepo.get(Comment, base_comment.id)
   end
 
   @tag :unique_constraint
@@ -702,6 +706,51 @@ defmodule Ecto.Integration.RepoTest do
     end
   end
 
+  test "reload" do
+    post1 = TestRepo.insert!(%Post{title: "1", visits: 1})
+    post2 = TestRepo.insert!(%Post{title: "2", visits: 2})
+
+    assert post1 == TestRepo.reload(post1)
+    assert [post1, post2] == TestRepo.reload([post1, post2])
+    assert [post1, post2, nil] == TestRepo.reload([post1, post2, %Post{id: 55}])
+    assert nil == TestRepo.reload(%Post{id: 55})
+
+    # keeps order as received in the params
+    assert [post2, post1] == TestRepo.reload([post2, post1])
+
+    TestRepo.update_all(Post, inc: [visits: 1])
+
+    assert [%{visits: 2}, %{visits: 3}] = TestRepo.reload([post1, post2])
+  end
+
+  test "reload ignores preloads" do
+    post = TestRepo.insert!(%Post{title: "1", visits: 1}) |> TestRepo.preload(:comments)
+
+    assert %{comments: %Ecto.Association.NotLoaded{}} = TestRepo.reload(post)
+  end
+
+  test "reload!" do
+    post1 = TestRepo.insert!(%Post{title: "1", visits: 1})
+    post2 = TestRepo.insert!(%Post{title: "2", visits: 2})
+
+    assert post1 == TestRepo.reload!(post1)
+    assert [post1, post2] == TestRepo.reload!([post1, post2])
+
+    assert_raise RuntimeError, ~r"could not reload", fn ->
+      TestRepo.reload!([post1, post2, %Post{id: 55}])
+    end
+
+    assert_raise Ecto.NoResultsError, fn ->
+      TestRepo.reload!(%Post{id: 55})
+    end
+
+    assert [post2, post1] == TestRepo.reload([post2, post1])
+
+    TestRepo.update_all(Post, inc: [visits: 1])
+
+    assert [%{visits: 2}, %{visits: 3}] = TestRepo.reload!([post1, post2])
+  end
+
   test "first, last and one(!)" do
     post1 = TestRepo.insert!(%Post{title: "1"})
     post2 = TestRepo.insert!(%Post{title: "2"})
@@ -905,21 +954,21 @@ defmodule Ecto.Integration.RepoTest do
   end
 
   test "update all" do
-    assert %Post{id: id1} = TestRepo.insert!(%Post{title: "1"})
-    assert %Post{id: id2} = TestRepo.insert!(%Post{title: "2"})
-    assert %Post{id: id3} = TestRepo.insert!(%Post{title: "3"})
+    assert post1 = TestRepo.insert!(%Post{title: "1"})
+    assert post2 = TestRepo.insert!(%Post{title: "2"})
+    assert post3 = TestRepo.insert!(%Post{title: "3"})
 
     assert {3, nil} = TestRepo.update_all(Post, set: [title: "x"])
 
-    assert %Post{title: "x"} = TestRepo.get(Post, id1)
-    assert %Post{title: "x"} = TestRepo.get(Post, id2)
-    assert %Post{title: "x"} = TestRepo.get(Post, id3)
+    assert %Post{title: "x"} = TestRepo.reload(post1)
+    assert %Post{title: "x"} = TestRepo.reload(post2)
+    assert %Post{title: "x"} = TestRepo.reload(post3)
 
     assert {3, nil} = TestRepo.update_all("posts", [set: [title: nil]])
 
-    assert %Post{title: nil} = TestRepo.get(Post, id1)
-    assert %Post{title: nil} = TestRepo.get(Post, id2)
-    assert %Post{title: nil} = TestRepo.get(Post, id3)
+    assert %Post{title: nil} = TestRepo.reload(post1)
+    assert %Post{title: nil} = TestRepo.reload(post2)
+    assert %Post{title: nil} = TestRepo.reload(post3)
   end
 
   @tag :invalid_prefix

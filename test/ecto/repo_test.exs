@@ -220,6 +220,46 @@ defmodule Ecto.RepoTest do
     end
   end
 
+  describe "reload" do
+    test "raises when input structs do not have valid primary keys" do
+      message = "Ecto.Repo.reload/2 expects existent structs, found a `nil` primary key"
+      assert_raise ArgumentError, message, fn ->
+        TestRepo.reload(%MySchema{})
+      end
+    end
+
+    test "raises when input is not a struct or a list of structs" do
+      message = ~r"expected a struct or a list of structs,"
+      assert_raise ArgumentError, message, fn ->
+        TestRepo.reload(%{my_key: 1})
+      end
+
+      assert_raise ArgumentError, message, fn ->
+        TestRepo.reload([%{my_key: 1}, %{my_key: 2}])
+      end
+    end
+
+    test "raises when schema doesn't have a primary key" do
+      message = ~r"to have exactly one primary key"
+      assert_raise ArgumentError, message, fn ->
+        TestRepo.reload(%MySchemaNoPK{})
+      end
+    end
+
+    test "raises when receives multiple struct types" do
+      message = ~r"expected an homogenous list"
+      assert_raise ArgumentError, message, fn ->
+        TestRepo.reload([%MySchemaWithAssoc{id: 1}, %MySchema{id: 2}])
+      end
+    end
+
+    test "supports prefix" do
+      struct_with_prefix = put_meta(%MySchema{id: 2}, prefix: "another")
+      TestRepo.reload(struct_with_prefix)
+      assert_received {:all, %{prefix: "another"}}
+    end
+  end
+
   defmodule DefaultOptionRepo do
     use Ecto.Repo, otp_app: :ecto, adapter: Ecto.TestAdapter
 
@@ -245,6 +285,11 @@ defmodule Ecto.RepoTest do
 
       DefaultOptionRepo.delete_all(MySchema)
       assert_received {:delete_all, query}
+      assert query.prefix == "fallback_schema"
+
+      DefaultOptionRepo.preload(%MySchemaWithAssoc{parent_id: 1}, :parent)
+      assert_received {:all, query}
+      assert query.from.source == {"my_parent", Ecto.RepoTest.MyParent}
       assert query.prefix == "fallback_schema"
     end
   end
@@ -706,29 +751,6 @@ defmodule Ecto.RepoTest do
       assert schema.__meta__.prefix == "private"
     end
 
-    test "insert and update with repo_changes" do
-      valid =
-        %MySchema{id: 1}
-        |> Ecto.Changeset.change()
-        |> Map.put(:repo_changes, %{x: "repo change"})
-
-      assert {:ok, schema} = TestRepo.insert(valid)
-      assert schema.x == "repo change"
-
-      assert {:ok, schema} = TestRepo.update(valid)
-      assert schema.x == "repo change"
-
-      invalid = %{valid | valid?: false}
-
-      assert {:error, changeset} = TestRepo.insert(invalid)
-      refute changeset.data.x
-      refute changeset.changes[:x]
-
-      assert {:error, changeset} = TestRepo.update(invalid)
-      refute changeset.data.x
-      refute changeset.changes[:x]
-    end
-
     test "insert, update and insert_or_update parent schema_prefix does not override `nil` children schema_prefix" do
       assert {:ok, schema} = TestRepo.insert(%MyParentWithPrefix{id: 1})
       assert schema.__meta__.prefix == "private"
@@ -1158,32 +1180,22 @@ defmodule Ecto.RepoTest do
 
     test "replaces specified fields on replace" do
       fields = [:x, :yyy]
-      TestRepo.insert(
-        %MySchema{id: 1},
-        on_conflict: {:replace, [:x, :y]},
-        conflict_target: [:id]
-      )
-      assert_received {:insert, %{source: "my_schema", on_conflict: {^fields, [], [:id]}}}
+      TestRepo.insert(%MySchema{id: 1}, on_conflict: {:replace, [:x, :y]})
+      assert_received {:insert, %{source: "my_schema", on_conflict: {^fields, [], []}}}
     end
 
     test "replaces specified fields on replace without a schema" do
       fields = [:x, :yyy]
       rows = [[id: 1, x: "x", yyy: "yyy"]]
-      TestRepo.insert_all(
-        "my_schema",
-        rows,
-        on_conflict: {:replace, [:x, :yyy]},
-        conflict_target: [:id]
-      )
-      assert_received {:insert_all, %{source: "my_schema", on_conflict: {^fields, [], [:id]}}, ^rows}
+      TestRepo.insert_all("my_schema", rows, on_conflict: {:replace, [:x, :yyy]})
+      assert_received {:insert_all, %{source: "my_schema", on_conflict: {^fields, [], []}}, ^rows}
     end
 
     test "raises on non-existent fields on replace" do
       assert_raise ArgumentError, "unknown field for :on_conflict, got: :unknown", fn ->
         TestRepo.insert(
           %MySchema{id: 1},
-          on_conflict: {:replace, [:unknown]},
-          conflict_target: [:id]
+          on_conflict: {:replace, [:unknown]}
         )
       end
     end
@@ -1216,12 +1228,6 @@ defmodule Ecto.RepoTest do
     test "raises on non-empty conflict_target with on_conflict raise" do
       assert_raise ArgumentError, ":conflict_target option is forbidden when :on_conflict is :raise", fn ->
         TestRepo.insert(%MySchema{id: 1}, on_conflict: :raise, conflict_target: [:id])
-      end
-    end
-
-    test "raises on empty conflict_target with on_conflict replace" do
-      assert_raise ArgumentError, ":conflict_target option is required when :on_conflict is replace", fn ->
-        TestRepo.insert(%MySchema{id: 1}, on_conflict: {:replace, []})
       end
     end
 
@@ -1407,6 +1413,12 @@ defmodule Ecto.RepoTest do
       PrepareRepo.stream(query, [hello: :world]) |> Enum.to_list()
       assert_received {:stream, ^query, [hello: :world]}
       assert_received {:stream, %{prefix: "rewritten"}}
+    end
+
+    test "preload" do
+      PrepareRepo.preload(%MySchemaWithAssoc{parent_id: 1}, :parent, [hello: :world])
+      assert_received {:all, query, [hello: :world]}
+      assert query.from.source == {"my_parent", Ecto.RepoTest.MyParent}
     end
   end
 

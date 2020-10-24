@@ -1,5 +1,72 @@
 # Changelog for v3.x
 
+## v3.5.3 (2020-10-21)
+
+### Bug fixes
+
+  * [Ecto.Query] Do not reset parameter counter for nested CTEs
+  * [Ecto.Type] Fix regression where array type with nils could no longer be cast/load/dump
+  * [Ecto.Type] Fix CaseClauseError when casting a decimal with a binary remainder
+
+## v3.5.2 (2020-10-12)
+
+### Enhancements
+
+  * [Ecto.Repo] Add Repo.reload/2 and Repo.reload!/2
+
+### Bug fixes
+
+  * [Ecto.Changeset] Fix "__schema__/1 is undefined or private" error while inspecting a schemaless changeset
+  * [Ecto.Repo] Invoke `c:Ecto.Repo.default_options/1` per entry-point operation
+
+## v3.5.1 (2020-10-08)
+
+### Enhancements
+
+  * [Ecto.Changeset] Warn if there are duplicate IDs in the parent schema for `cast_assoc/3`/`cast_embed/3`
+  * [Ecto.Schema] Allow `belongs_to` to accept options for parameterized types
+
+### Bug fixes
+
+  * [Ecto.Query] Keep field types when using a subquery with source
+
+## v3.5.0 (2020-10-03)
+
+v3.5 requires Elixir v1.8+.
+
+### Bug fixes
+
+  * [Ecto.Changeset] Ensure `:empty_values` in `cast/4` does not automatically propagate to following cast calls. If you want a given set of `:empty_values` to apply to all `cast/4` calls, change the value stored in `changeset.empty_values` instead
+  * [Ecto.Changeset] Do not force repository updates to happen when using `optimistic_lock`
+  * [Ecto.Changeset] Do not automatically share empty values across `cast/3` calls
+  * [Ecto.Query] Consider query prefix in cte/combination query cache
+  * [Ecto.Query] Allow the entry to be marked as nil when using left join with subqueries
+  * [Ecto.Query] Support subqueries inside dynamic expressions
+  * [Ecto.Repo] Fix preloading when using dynamic repos and the sandbox in automatic mode
+  * [Ecto.Repo] Do not duplicate collections when associations are preloaded for repeated elements
+
+### Enhancements
+
+  * [Ecto.Enum] Add `Ecto.Enum` as a custom parameterized type
+  * [Ecto.Query] Allow `:prefix` in `from` to be set to nil
+  * [Ecto.Query] Do not restrict subqueries in `where` to map/struct types
+  * [Ecto.Query] Allow atoms in query without interpolation in order to support Ecto.Enum
+  * [Ecto.Schema] Do not validate uniqueness if there is a prior error on the field
+  * [Ecto.Schema] Allow `redact: true` in `field`
+  * [Ecto.Schema] Support parameterized types via `Ecto.ParameterizedType`
+
+## v3.4.6 (2020-08-07)
+
+### Enhancements
+
+  * [Ecto.Query] Allow `count/0` on `type/2`
+  * [Ecto.Multi] Support anonymous functions in multiple functions
+
+### Bug fixes
+
+  * [Ecto.Query] Consider booleans as literals in unions, subqueries, ctes, etc
+  * [Ecto.Schema] Generate IDs for nested embeds
+
 ## v3.4.5 (2020-06-14)
 
 ### Enhancements

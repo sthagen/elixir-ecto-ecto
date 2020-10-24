@@ -8,7 +8,7 @@ defmodule Ecto.Query.Planner do
     raise "Ecto.Query match out of date in builder"
   end
 
-  @parent_as 0
+  @parent_as __MODULE__
 
   @doc """
   Converts a query to a list of joins.
@@ -287,8 +287,15 @@ defmodule Ecto.Query.Planner do
   defp normalize_subquery_select(query, adapter, source?) do
     {expr, %{select: select} = query} = rewrite_subquery_select_expr(query, source?)
     {expr, _} = prewalk(expr, :select, query, select, 0, adapter)
-    {meta, _fields, _from} = collect_fields(expr, [], :error, query, select.take, true)
+    {meta, _fields, _from} = collect_fields(expr, [], :never, query, select.take, true)
     {query, meta}
+  end
+
+  # If we are selecting a source, we keep it as is.
+  # Otherwise we normalize the select, which converts them into structs.
+  # This means that `select: p` in subqueries will be nullable in a join.
+  defp rewrite_subquery_select_expr(%{select: %{expr: {:&, _, [_]} = expr}} = query, _source?) do
+    {expr, query}
   end
 
   defp rewrite_subquery_select_expr(%{select: select} = query, source?) do
@@ -378,8 +385,17 @@ defmodule Ecto.Query.Planner do
     end
   end
 
-  defp subquery_types({:map, types}), do: types
-  defp subquery_types({:struct, _name, types}), do: types
+  defp subquery_type_for({:source, _, _, fields}, field), do: Keyword.fetch(fields, field)
+  defp subquery_type_for({:struct, _name, types}, field), do: subquery_type_for_value(types, field)
+  defp subquery_type_for({:map, types}, field), do: subquery_type_for_value(types, field)
+
+  defp subquery_type_for_value(types, field) do
+    case Keyword.fetch(types, field) do
+      {:ok, {:value, type}} -> {:ok, type}
+      {:ok, _} -> {:ok, :any}
+      :error -> :error
+    end
+  end
 
   defp assert_subquery_fields!(query, expr, pairs) do
     Enum.each(pairs, fn
@@ -551,6 +567,9 @@ defmodule Ecto.Query.Planner do
       {_, schema, _} ->
         schema
 
+      %Ecto.SubQuery{select: {:source, {_, schema}, _, _}} ->
+        schema
+
       %Ecto.SubQuery{select: {:struct, schema, _}} ->
         schema
 
@@ -581,13 +600,14 @@ defmodule Ecto.Query.Planner do
   Prepare the parameters by merging and casting them according to sources.
   """
   def plan_cache(query, operation, adapter) do
-    {query, {cache, params}} = traverse_cache(query, operation, {[], []}, adapter)
-    {query, Enum.reverse(params), finalize_cache(query, operation, cache)}
+    {query, params, cache} = traverse_cache(query, operation, {[], []}, adapter)
+    {query, Enum.reverse(params), cache}
   end
 
   defp traverse_cache(query, operation, cache_params, adapter) do
     fun = &{&3, merge_cache(&1, &2, &3, &4, operation, adapter)}
-    traverse_exprs(query, operation, cache_params, fun)
+    {query, {cache, params}} = traverse_exprs(query, operation, cache_params, fun)
+    {query, params, finalize_cache(query, operation, cache)}
   end
 
   defp merge_cache(:from, _query, from, {cache, params}, _operation, _adapter) do
@@ -653,7 +673,7 @@ defmodule Ecto.Query.Planner do
     # In here we add each combination as its own entry in the cache key.
     # We could group them to avoid multiple keys, but since they are uncommon, we keep it simple.
     Enum.reduce combinations, cache_and_params, fn {modifier, query}, {cache, params} ->
-      {_, {inner_cache, params}} = traverse_cache(query, operation, {[], params}, adapter)
+      {_, params, inner_cache} = traverse_cache(query, operation, {[], params}, adapter)
       {merge_cache({modifier, inner_cache}, cache, inner_cache != :nocache), params}
     end
   end
@@ -670,7 +690,7 @@ defmodule Ecto.Query.Planner do
     # We could group them to avoid multiple keys, but since they are uncommon, we keep it simple.
     Enum.reduce queries, cache_and_params, fn
       {name, %Ecto.Query{} = query}, {cache, params} ->
-        {_, {inner_cache, params}} = traverse_cache(query, :all, {[], params}, adapter)
+        {_, params, inner_cache} = traverse_cache(query, :all, {[], params}, adapter)
         {merge_cache({key, name, inner_cache}, cache, inner_cache != :nocache), params}
 
       {name, %Ecto.Query.QueryExpr{} = query_expr}, {cache, params} ->
@@ -897,7 +917,6 @@ defmodule Ecto.Query.Planner do
     case operation do
       :all ->
         assert_no_update!(query, operation)
-        assert_valid_combinations!(query)
       :update_all ->
         assert_update!(query, operation)
         assert_only_filter_expressions!(query, operation)
@@ -952,10 +971,15 @@ defmodule Ecto.Query.Planner do
       Enum.reduce with_expr.queries, {[], counter}, fn
         {name, %Ecto.Query{} = query}, {queries, counter} ->
           {query, counter} = traverse_exprs(query, :all, counter, fun)
-          {_expr, query} = rewrite_subquery_select_expr(query, true)
-          {query, select} = normalize_select(query, true)
-          keys = select.postprocess |> subquery_types() |> Keyword.keys()
-          query = update_in(query.select.fields, &Enum.zip(keys, &1))
+
+          # We don't want to use normalize_subquery_select because it
+          # prepares the select and as such it will reset its parameters,
+          # so we call rewrite_subquery_select_expr directly instead
+          {expr, %{select: select} = query} = rewrite_subquery_select_expr(query, true)
+          {source, fields, _from} = collect_fields(expr, [], :never, query, select.take, true)
+          {_, keys} = subquery_struct_and_fields(source)
+          query = put_in(query.select.fields, Enum.zip(keys, Enum.reverse(fields)))
+
           {[{name, query} | queries], counter}
 
         {name, %QueryExpr{expr: {:fragment, _, _} = fragment} = query_expr}, {queries, counter} ->
@@ -998,22 +1022,22 @@ defmodule Ecto.Query.Planner do
     {Enum.reverse(combinations), counter}
   end
 
-  defp validate_json_path!([path_field | rest], field, type) do
-    case type do
-      {:embed, %{related: related, cardinality: :one}} ->
-        unless path_field in Enum.map(related.__schema__(:fields), &Atom.to_string/1) do
+  defp validate_json_path!([path_field | rest], field, embed) do
+    case embed do
+      %{related: related, cardinality: :one} ->
+        unless Enum.any?(related.__schema__(:fields), &Atom.to_string(&1) == path_field) do
           raise "field `#{path_field}` does not exist in #{inspect(related)}"
         end
 
-        path_type = related.__schema__(:type, String.to_atom(path_field))
-        validate_json_path!(rest, path_field, path_type)
+        path_embed = related.__schema__(:embed, String.to_atom(path_field))
+        validate_json_path!(rest, path_field, path_embed)
 
-      {:embed, %{related: _, cardinality: :many} = embed} ->
+      %{related: _, cardinality: :many} ->
         unless is_integer(path_field) do
           raise "cannot use `#{path_field}` to refer to an item in `embeds_many`"
         end
 
-        validate_json_path!(rest, path_field, {:embed, %{embed | cardinality: :one}})
+        validate_json_path!(rest, path_field, %{embed | cardinality: :one})
 
       other ->
         raise "expected field `#{field}` to be of type embed, got: `#{inspect(other)}`"
@@ -1041,7 +1065,7 @@ defmodule Ecto.Query.Planner do
           inner_query
         else
           update_in(inner_query.select.fields, fn fields ->
-            subquery.select |> subquery_types() |> Keyword.keys() |> Enum.zip(fields)
+            subquery.select |> subquery_struct_and_fields() |> elem(1) |> Enum.zip(fields)
           end)
         end
 
@@ -1110,19 +1134,17 @@ defmodule Ecto.Query.Planner do
     {%Ecto.Query.Tagged{value: arg, tag: type, type: Ecto.Type.type(type)}, acc}
   end
 
-  defp prewalk({:json_extract_path, meta, [json_field, path]}, kind, query, _expr, acc, _adapter) do
+  defp prewalk({:json_extract_path, meta, [json_field, path]}, kind, query, expr, acc, _adapter) do
     {{:., _, [{:&, _, [ix]}, field]}, _, []} = json_field
 
-    case get_source!(kind, query, ix) do
-      {_, nil, _} ->
-        :ok
+    case type!(kind, query, expr, ix, field) do
+      {:parameterized, Ecto.Embedded, embed} ->
+        validate_json_path!(path, field, embed)
 
-      {_, schema, _} ->
-        type = schema.__schema__(:type, field)
-
-        case type do
-          {:embed, _} ->
-            validate_json_path!(path, field, type)
+      type ->
+        case Ecto.Type.type(type) do
+          :any ->
+            :ok
 
           :map ->
             :ok
@@ -1130,11 +1152,8 @@ defmodule Ecto.Query.Planner do
           {:map, _} ->
             :ok
 
-          nil ->
-            raise "field `#{field}` does not exist in #{inspect(schema)}"
-
-          other ->
-            raise "expected field `#{field}` to be an embed or a map, got: `#{inspect(other)}`"
+          _ ->
+            raise "expected field `#{field}` to be an embed or a map, got: `#{inspect(type)}`"
         end
     end
 
@@ -1221,7 +1240,7 @@ defmodule Ecto.Query.Planner do
       end
 
     {postprocess, fields, from} =
-      collect_fields(expr, [], :error, query, take, keep_literals?)
+      collect_fields(expr, [], :none, query, take, keep_literals?)
 
     {fields, preprocess, from} =
       case from do
@@ -1231,10 +1250,10 @@ defmodule Ecto.Query.Planner do
           preprocess = [from_pre | Enum.reverse(assoc_exprs)]
           {fields, preprocess, {from_tag, from_expr}}
 
-        :error when preloads != [] or assocs != [] ->
+        :none when preloads != [] or assocs != [] ->
           error! query, "the binding used in `from` must be selected in `select` when using `preload`"
 
-        :error ->
+        :none ->
           {Enum.reverse(fields), [], :none}
       end
 
@@ -1251,7 +1270,7 @@ defmodule Ecto.Query.Planner do
 
   # Handling of source
 
-  defp collect_fields({:merge, _, [{:&, _, [0]}, right]}, fields, :error, query, take, keep_literals?) do
+  defp collect_fields({:merge, _, [{:&, _, [0]}, right]}, fields, :none, query, take, keep_literals?) do
     {expr, taken} = source_take!(:select, query, take, 0, 0)
     from = {:ok, {:source, :from}, expr, taken}
 
@@ -1261,12 +1280,13 @@ defmodule Ecto.Query.Planner do
     {{:source, :from}, fields, from}
   end
 
-  defp collect_fields({:&, _, [0]}, fields, :error, query, take, _keep_literals?) do
+  defp collect_fields({:&, _, [0]}, fields, :none, query, take, _keep_literals?) do
     {expr, taken} = source_take!(:select, query, take, 0, 0)
     {{:source, :from}, fields, {:ok, {:source, :from}, expr, taken}}
   end
 
-  defp collect_fields({:&, _, [0]}, fields, from, _query, _take, _keep_literals?) do
+  defp collect_fields({:&, _, [0]}, fields, from, _query, _take, _keep_literals?)
+       when from != :never do
     {{:source, :from}, fields, from}
   end
 
@@ -1519,8 +1539,8 @@ defmodule Ecto.Query.Planner do
         {{:source, {source, schema}, prefix || query.prefix, types}, fields}
 
       {:error, %Ecto.SubQuery{select: select}} ->
-        fields = for {field, _} <- subquery_types(select), do: select_field(field, ix)
-        {select, fields}
+        {_, fields} = subquery_struct_and_fields(select)
+        {select, Enum.map(fields, &select_field(&1, ix))}
     end
   end
 
@@ -1626,13 +1646,9 @@ defmodule Ecto.Query.Planner do
         type!(kind, query, expr, schema, field)
 
       %Ecto.SubQuery{select: select} ->
-        case Keyword.fetch(subquery_types(select), field) do
-          {:ok, {:value, type}} ->
-            type
-          {:ok, _} ->
-            :any
-          :error ->
-            error!(query, expr, "field `#{field}` does not exist in subquery")
+        case subquery_type_for(select, field) do
+          {:ok, type} -> type
+          :error -> error!(query, expr, "field `#{field}` does not exist in subquery")
         end
     end
   end
@@ -1726,33 +1742,6 @@ defmodule Ecto.Query.Planner do
         error! query, "`#{operation}` allows only `with_cte`, `where` and `join` expressions. " <>
                       "You can exclude unwanted expressions from a query by using " <>
                       "Ecto.Query.exclude/2. Error found"
-    end
-  end
-
-  defp assert_valid_combinations!(query) do
-    case query.combinations do
-      [] ->
-        :ok
-
-      [{kind, _} | _] ->
-        has_bindings? =
-          Enum.any?(query.order_bys, fn order_by ->
-            Enum.any?(order_by.expr, &match?({_dir, {{:., [], [{:&, [], [_]}, _]}, [], []}}, &1))
-          end)
-
-        if has_bindings? do
-          error! query, """
-          cannot use bindings in `order_by` when using `#{kind}`.
-
-          That's because the `order_by` applies to the whole `#{kind}` and not \
-          an individual query. If you really want to order the results, you can wrap \
-          the existing query in a subquery and then order it:
-
-              query = #{kind}(query1, ^query2)
-              from q in subquery(query), order_by: q.field
-
-          """
-        end
     end
   end
 

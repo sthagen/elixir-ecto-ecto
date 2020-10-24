@@ -9,7 +9,8 @@ defmodule Ecto.SchemaTest do
     schema "my schema" do
       field :name,  :string, default: "eric", autogenerate: {String, :upcase, ["eric"]}
       field :email, :string, uniq: true, read_after_writes: true
-      field :temp,  :any, default: "temp", virtual: true
+      field :password, :string, redact: true
+      field :temp,  :any, default: "temp", virtual: true, redact: true
       field :count, :decimal, read_after_writes: true, source: :cnt
       field :array, {:array, :string}
       field :uuid, Ecto.UUID, autogenerate: true
@@ -22,8 +23,8 @@ defmodule Ecto.SchemaTest do
   test "schema metadata" do
     assert Schema.__schema__(:source)             == "my schema"
     assert Schema.__schema__(:prefix)             == nil
-    assert Schema.__schema__(:fields)             == [:id, :name, :email, :count, :array, :uuid, :query_excluded_field, :comment_id]
-    assert Schema.__schema__(:query_fields)       == [:id, :name, :email, :count, :array, :uuid, :comment_id]
+    assert Schema.__schema__(:fields)             == [:id, :name, :email, :password, :count, :array, :uuid, :query_excluded_field, :comment_id]
+    assert Schema.__schema__(:query_fields)       == [:id, :name, :email, :password, :count, :array, :uuid, :comment_id]
     assert Schema.__schema__(:read_after_writes)  == [:email, :count]
     assert Schema.__schema__(:primary_key)        == [:id]
     assert Schema.__schema__(:autogenerate_id)    == {:id, :id, :id}
@@ -49,7 +50,7 @@ defmodule Ecto.SchemaTest do
 
   test "changeset metadata" do
     assert Schema.__changeset__() |> Map.drop([:comment, :permalink]) ==
-           %{name: :string, email: :string, count: :decimal, array: {:array, :string},
+           %{name: :string, email: :string, password: :string, count: :decimal, array: {:array, :string},
              comment_id: :id, temp: :any, id: :id, uuid: Ecto.UUID, query_excluded_field: :string}
   end
 
@@ -104,6 +105,29 @@ defmodule Ecto.SchemaTest do
   test "defaults" do
     assert %Schema{}.name == "eric"
     assert %Schema{}.array == nil
+  end
+
+  test "redacted_fields" do
+    assert Schema.__schema__(:redact_fields) == [:temp, :password]
+  end
+
+  test "derives inspect" do
+    refute inspect(%Schema{password: "hunter2"}) =~ "hunter2"
+    refute inspect(%Schema{temp: "hunter2"}) =~ "hunter2"
+  end
+
+  defmodule SchemaWithoutDeriveInspect do
+    use Ecto.Schema
+
+    @ecto_derive_inspect_for_redacted_fields false
+
+    schema "my_schema" do
+      field :password, :string, redact: true
+    end
+  end
+
+  test "doesn't derive inspect" do
+    assert inspect(%SchemaWithoutDeriveInspect{password: "hunter2"}) =~ "hunter2"
   end
 
   defmodule CustomSchema do
@@ -367,6 +391,26 @@ defmodule Ecto.SchemaTest do
         end
       end
     end
+
+    assert_raise ArgumentError, "invalid or unknown type :jsonb for field :name", fn ->
+      defmodule SchemaInvalidFieldType do
+        use Ecto.Schema
+
+        schema "invalidtype" do
+          field :name, :jsonb
+        end
+      end
+    end
+
+    assert_raise ArgumentError, "invalid or unknown type :jsonb for field :name", fn ->
+      defmodule SchemaInvalidFieldType do
+        use Ecto.Schema
+
+        schema "invalidtype" do
+          field :name, {:array, :jsonb}
+        end
+      end
+    end
   end
 
   test "fail invalid schema" do
@@ -420,6 +464,14 @@ defmodule Ecto.SchemaTest do
 
   ## Associations
 
+  defmodule SchemaWithParameterizedPrimaryKey do
+    use Ecto.Schema
+
+    @primary_key {:id, ParameterizedPrefixedString, prefix: "ref", autogenerate: false}
+    schema "references" do
+    end
+  end
+
   defmodule AssocSchema do
     use Ecto.Schema
 
@@ -432,12 +484,13 @@ defmodule Ecto.SchemaTest do
       has_many :emails, {"users_emails", Email}, on_replace: :delete
       has_one :profile, {"users_profiles", Profile}
       belongs_to :summary, {"post_summary", Summary}
+      belongs_to :reference, SchemaWithParameterizedPrimaryKey, type: ParameterizedPrefixedString, prefix: "ref"
     end
   end
 
   test "associations" do
     assert AssocSchema.__schema__(:association, :not_a_field) == nil
-    assert AssocSchema.__schema__(:fields) == [:id, :comment_id, :summary_id]
+    assert AssocSchema.__schema__(:fields) == [:id, :comment_id, :summary_id, :reference_id]
   end
 
   test "has_many association" do
@@ -546,6 +599,20 @@ defmodule Ecto.SchemaTest do
     comment = (%AssocSchema{}).comment
     assert %Ecto.Association.NotLoaded{} = comment
     assert inspect(comment) == "#Ecto.Association.NotLoaded<association :comment is not loaded>"
+  end
+
+  test "belongs_to association via Ecto.ParameterizedType" do
+    struct =
+      %Ecto.Association.BelongsTo{field: :reference, owner: AssocSchema, cardinality: :one,
+       related: SchemaWithParameterizedPrimaryKey, owner_key: :reference_id, related_key: :id, queryable: SchemaWithParameterizedPrimaryKey,
+       on_replace: :raise, defaults: []}
+
+    assert AssocSchema.__schema__(:association, :reference) == struct
+    assert AssocSchema.__changeset__().reference == {:assoc, struct}
+
+    reference = (%AssocSchema{}).reference
+    assert %Ecto.Association.NotLoaded{} = reference
+    assert inspect(reference) == "#Ecto.Association.NotLoaded<association :reference is not loaded>"
   end
 
   defmodule CustomAssocSchema do
