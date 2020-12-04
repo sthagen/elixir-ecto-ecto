@@ -1,5 +1,30 @@
 # Changelog for v3.x
 
+## v3.5.5 (2020-11-12)
+
+### Enhancements
+
+  * [Ecto.Query] Add support for subqueries operators: `all`, `any`, and `exists`
+
+### Bug fixes
+
+  * [Ecto.Changeset] Use association source on `put_assoc` with maps/keywords
+  * [Ecto.Enum] Add `cast` clause for nil values on `Ecto.Enum`
+  * [Ecto.Schema] Allow nested type `:any` for non-virtual fields
+
+## v3.5.4 (2020-10-28)
+
+### Enhancements
+
+  * [mix ecto.drop] Provide `--force-drop` for databases that may support it
+  * [guides] Add new "Multi tenancy with foreign keys" guide
+
+### Bug fixes
+
+  * [Ecto.Changeset] Make keys optionals in specs
+  * [Ecto.Enum] Make sure `values/2` works for virtual fields
+  * [Ecto.Query] Fix missing type on CTE queries that select a single field
+
 ## v3.5.3 (2020-10-21)
 
 ### Bug fixes

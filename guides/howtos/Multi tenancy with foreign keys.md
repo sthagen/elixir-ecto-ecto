@@ -2,7 +2,7 @@
 
 In [Multi tenancy with query prefixes](Multi tenancy with query prefixes.md), we have learned how to set up multi tenant applications by using separate query prefixes, known as DDL Schemas in PostgreSQL and MSSQL and simply a separate database in MySQL.
 
-Each query prefix is isolated, having their own tables and data, which provides the security guarantees we need. On the other hand, such approach for multi tenancy may be to expensive, as each schema needs to be created, migrated, and versioned separately.
+Each query prefix is isolated, having their own tables and data, which provides the security guarantees we need. On the other hand, such approach for multi tenancy may be too expensive, as each schema needs to be created, migrated, and versioned separately.
 
 Therefore, some applications may prefer a cheaper mechanism for multi tenancy, by relying on foreign keys. The idea here is that most - if not all - resources in the system belong to a tenant. The tenant is typically an organization or a user and all resources have an `org_id` (or `user_id`) foreign key pointing directly to it.
 
@@ -24,9 +24,9 @@ defmodule MyApp.Repo do
 
   require Ecto.Query
 
-  def prepare_query(operation, query, opts) do
+  def prepare_query(_operation, query, opts) do
     cond do
-      opts[:skip_org_id] ->
+      opts[:skip_org_id] || opts[:schema_migration] ->
         {query, opts}
 
       org_id = opts[:org_id] ->
@@ -39,13 +39,17 @@ defmodule MyApp.Repo do
 end
 ```
 
-Now we can pass `:org_id` to `all`, `update_all`, `get`, `preload`, etc. Generally speaking, to all READ/SELECT operations. Note we have intentionally made the `:org_id` required: you either have to pass it or you have to explicitly set `:skip_org_id` to true. This reduces the odds of a developer forgetting to scope their queries, which can accidentally expose private data to other users.
+Now we can pass `:org_id` to `all`, `update_all`, `get`, `preload`, etc. Generally speaking, to all READ/SELECT operations. Note we have intentionally made the `:org_id` required, with the exception of two scenarios:
+
+  * if you explicitly set `:skip_org_id` to true, it won't require an `:org_id`. This reduces the odds of a developer forgetting to scope their queries, which can accidentally expose private data to other users
+
+  * if the `:schema_migration` option is set. This means the repository operation was issued by Ecto itself when migrating our database and we don't want to apply an `org_id` to them
 
 Still, setting the `org_id` for every operation is cumbersome and error prone. We will be better served if all operations attempt to set an `org_id`.
 
 ## Setting `org_id` by default
 
-To make sure our read operations use the `org_id` by default, we will do two additional changes to the repository.
+To make sure our read operations use the `org_id` by default, we will make two additional changes to the repository.
 
 First, we will store the `org_id` in the process dictionary. The process dictionary is a storage that is exclusive to each process. For example, each test in your project runs in a separate process. Each request in a web application runs in a separate process too. Each of these processes have their own dictionary which we will store and read from. Let's add these functions:
 
@@ -87,7 +91,7 @@ With these changes, we will always set the `org_id` fields in our queries, unles
 
 Let's expand our data domain little a bit.
 
-So far we have assumed there is an organization schema. However, instead of naming its primary key `id`, we will name it `org_id`, so `Repo.get(Org, org_id: 13)` just works:
+So far we have assumed there is an organization schema. However, instead of naming its primary key `id`, we will name it `org_id`, so `Repo.one(Org, org_id: 13)` just works:
 
 ```elixir
 defmodule MyApp.Organization do
@@ -121,7 +125,7 @@ defmodule MyApp.Comment do
   schema "comments" do
     field :body
     field :org_id, :integer
-    belongs :post, MyApp.Post
+    belongs_to :post, MyApp.Post
     timestamps()
   end
 end
@@ -139,18 +143,22 @@ MyApp.Repo.all(
 
 `prepare_query` will apply the `org_id` only to posts but not to the `join`. While this may seem problematic, in practice it is not an issue, because when you insert posts and comments in the database, **they will always have the same `org_id`**. If posts and comments do not have the same `org_id`, then this is actually a bug in our data: the data either got corrupted or there is a bug in our software when inserting data.
 
-Luckily, we can leverage database's foreign keys to guarantee that the `org_id`s always match between posts and comments always match. Our first stab at defining these schema migrations would look like this:
+Luckily, we can leverage database's foreign keys to guarantee that the `org_id`s always match between posts and comments. Our first stab at defining these schema migrations would look like this:
 
 ```elixir
 create table(:orgs, primary_key: false) do
-  add :org_id, :id, primary_key: true
+  add :org_id, :bigserial, primary_key: true
   add :name, :string
   timestamps()
 end
 
 create table(:posts) do
   add :title, :string
-  add :org_id, references(:orgs), null: false
+
+  add :org_id,
+      references(:orgs, column: :org_id),
+      null: false
+
   timestamps()
 end
 
@@ -177,7 +185,7 @@ create table(:comments) do
 
   # Instead define a composite foreign key
   add :post_id,
-      references(:posts, with: [org_id: org_id]),
+      references(:posts, with: [org_id: :org_id]),
       null: false
 
   timestamps()
@@ -186,15 +194,15 @@ end
 
 Instead of defining both `post_id` and `org_id` as individual foreign keys, we define `org_id` as a regular integer and then we define `post_id+org_id` as a composite foreign key by passing the `:with` option to `Ecto.Migration.references/2`. This makes sure comments point to posts which point to orgs, where all `org_id`s match.
 
-Given composite foreign keys require the references keys to be unique, we also defined a unique index on the posts table **before** we defined the composite foreign key.
+Given composite foreign keys require the referenced keys to be unique, we also defined a unique index on the posts table **before** we defined the composite foreign key.
 
 If you are using PostgreSQL and you want to tighten these guarantees even further, you can pass the `match: :full` option to `references`:
 
 ```elixir
-references(:posts, with: [org_id: org_id], match: :full)
+references(:posts, with: [org_id: :org_id], match: :full)
 ```
 
-which will help enforce none of the columns in the foreign key can be nil.
+which will help enforce none of the columns in the foreign key can be `nil`.
 
 ## Summary
 
@@ -208,11 +216,11 @@ create table(:comments) do
   add :org_id, :integer, null: false
 
   add :post_id,
-      references(:posts, with: [org_id: org_id]),
+      references(:posts, with: [org_id: :org_id]),
       null: false
 
   add :user_id,
-      references(:users, with: [org_id: org_id]),
+      references(:users, with: [org_id: :org_id]),
       null: false
 
   timestamps()

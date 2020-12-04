@@ -246,6 +246,13 @@ defmodule Ecto.Schema do
 
   **Notes:**
 
+    * When using database migrations provided by "Ecto SQL", you can pass
+      your Ecto type as the column type. However, note the same Ecto type
+      may support multiple database types. For example, all of `:varchar`,
+      `:text`, `:bytea`, etc. translate to Ecto's `:string`. Similarly,
+      Ecto's `:decimal` can be used for `:numeric` and other database
+      types. For more information, see [all migration types](https://hexdocs.pm/ecto_sql/Ecto.Migration.html#module-field-types).
+
     * For the `{:array, inner_type}` and `{:map, inner_type}` type,
       replace `inner_type` with one of the valid types, such as `:string`.
 
@@ -625,7 +632,8 @@ defmodule Ecto.Schema do
     * `:default` - Sets the default value on the schema and the struct.
       The default value is calculated at compilation time, so don't use
       expressions like `DateTime.utc_now` or `Ecto.UUID.generate` as
-      they would then be the same for all records.
+      they would then be the same for all records: in this scenario you can use
+      the `:autogenerate` option to generate at insertion time.
 
     * `:source` - Defines the name that is to be used in database for this field.
       This is useful when attaching to an existing database. The value should be
@@ -1793,8 +1801,14 @@ defmodule Ecto.Schema do
 
   @doc false
   def __field__(mod, name, type, opts) do
+    if type == :any and !opts[:virtual] do
+      raise ArgumentError, "only virtual fields can have type :any, " <>
+                           "invalid type for field #{inspect name}"
+    end
+
     type = check_field_type!(mod, name, type, opts)
     Module.put_attribute(mod, :changeset_fields, {name, type})
+    validate_default!(type, opts[:default])
     define_field(mod, name, type, opts)
   end
 
@@ -2054,6 +2068,15 @@ defmodule Ecto.Schema do
     Module.put_attribute(mod, :struct_fields, {name, assoc})
   end
 
+  defp validate_default!(type, value) do 
+    case Ecto.Type.dump(type, value) do 
+      {:ok, _} ->
+        :ok
+      _ ->
+        raise ArgumentError, "value #{inspect(value)} is invalid for type #{inspect(type)}, can't set default"
+    end
+  end
+
   defp check_options!(opts, valid, fun_arity) do
     type = Keyword.get(opts, :type)
 
@@ -2075,10 +2098,6 @@ defmodule Ecto.Schema do
 
   defp check_field_type!(mod, name, type, opts) do
     cond do
-      type == :any and !opts[:virtual] ->
-        raise ArgumentError, "only virtual fields can have type :any, " <>
-                             "invalid type for field #{inspect name}"
-
       composite?(type, name) ->
         {outer_type, inner_type} = type
         {outer_type, check_field_type!(mod, name, inner_type, opts)}
@@ -2090,7 +2109,7 @@ defmodule Ecto.Schema do
         type
 
       is_atom(type) and Code.ensure_compiled(type) == {:module, type} and function_exported?(type, :type, 1) ->
-        {:parameterized, type, type.init(Keyword.merge(opts, field: name, schema: mod))}
+        Ecto.ParameterizedType.init(type, Keyword.merge(opts, field: name, schema: mod))
 
       is_atom(type) and function_exported?(type, :__schema__, 1) ->
         raise ArgumentError,

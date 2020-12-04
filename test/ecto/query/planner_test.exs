@@ -828,9 +828,9 @@ defmodule Ecto.Query.PlannerTest do
       Ecto.assoc(%Post{id: 1}, :crazy_comments_with_list)
       |> normalize_with_params()
 
-    assert inspect(query) =~ "join: c2 in Ecto.Query.PlannerTest.CommentPost, on: c2.post_id == p1.id and c2.deleted == ^..."
-    assert inspect(query) =~ "where: c2.comment_id == c0.id and c0.text in ^..."
-    assert params ==  [1, true, "crazycomment1", "crazycomment2"]
+    assert inspect(query) =~ "join: c1 in Ecto.Query.PlannerTest.CommentPost, on: c0.id == c1.comment_id and c1.deleted == ^..."
+    assert inspect(query) =~ "where: c1.post_id in ^... and c0.text in ^..."
+    assert params ==  [true, 1, "crazycomment1", "crazycomment2"]
   end
 
   test "normalize: many_to_many assoc join without schema and wheres" do
@@ -844,9 +844,9 @@ defmodule Ecto.Query.PlannerTest do
       Ecto.assoc(%Post{id: 1}, :crazy_comments_without_schema)
       |> normalize_with_params()
 
-    assert inspect(query) =~ "join: c2 in \"comment_posts\", on: c2.post_id == p1.id and c2.deleted == ^..."
-    assert inspect(query) =~ "where: c2.comment_id == c0.id"
-    assert params ==  [1, true]
+    assert inspect(query) =~ "join: c1 in \"comment_posts\", on: c0.id == c1.comment_id and c1.deleted == ^..."
+    assert inspect(query) =~ "where: c1.post_id in ^..."
+    assert params ==  [true, 1]
   end
 
   test "normalize: dumps in query expressions" do
@@ -985,7 +985,7 @@ defmodule Ecto.Query.PlannerTest do
       assert query.sources == {{"comments", nil, nil}}
       assert {:%{}, [], [id: _, text: _]} = query.select.expr
       assert  [id: {{:., _, [{:&, _, [0]}, :id]}, _, []},
-               text: {{:., _, [{:&, _, [0]}, :text]}, _, []}] = query.select.fields
+               text: {{:., [{:type, _} | _], [{:&, _, [0]}, :text]}, _, []}] = query.select.fields
 
       %{with_ctes: with_expr} =
         Comment
@@ -1021,6 +1021,17 @@ defmodule Ecto.Query.PlannerTest do
       query = normalize(query)
       [{"agg_values", query}] = query.with_ctes.queries
       assert Macro.to_string(query.select.fields) == "[bucket: ^1 + &0.number()]"
+    end
+
+    test "with field select" do
+      query =
+        "parent"
+        |> with_cte("cte", as: ^from(r in "cte", select: r.child))
+        |> select([e], [:parent])
+        |> normalize()
+
+      [{"cte", query}] = query.with_ctes.queries
+      assert Macro.to_string(query.select.fields) == "[child: &0.child()]"
     end
   end
 
@@ -1262,6 +1273,49 @@ defmodule Ecto.Query.PlannerTest do
     message = ~r"`delete_all` allows only `with_cte`, `where` and `join` expressions"
     assert_raise Ecto.QueryError, message, fn ->
       from(p in Post, order_by: p.title) |> normalize(:delete_all)
+    end
+  end
+
+  describe "normalize: subqueries in boolean expressions" do
+    test "replaces {:subquery, index} with an Ecto.SubQuery struct" do
+      subquery = from(p in Post, select: p.visits)
+
+      %{wheres: [where]} =
+        from(p in Post, where: p.visits in subquery(subquery))
+        |> normalize()
+
+      assert {:in, _, [_, %Ecto.SubQuery{}] } = where.expr
+
+      %{wheres: [where]} =
+        from(p in Post, where: p.visits >= all(subquery))
+        |> normalize()
+
+      assert {:>=, _, [_, {:all, _, [%Ecto.SubQuery{}] }]} = where.expr
+
+      %{wheres: [where]} =
+        from(p in Post, where: exists(subquery))
+        |> normalize()
+
+      assert {:exists, _, [%Ecto.SubQuery{}]} = where.expr
+    end
+
+    test "raises a runtime error if more than 1 field is selected" do
+      s = from(p in Post, select: [p.visits, p.id])
+
+      assert_raise Ecto.QueryError, fn ->
+        from(p in Post, where: p.id in subquery(s))
+        |> normalize()
+      end
+
+      assert_raise Ecto.QueryError, fn ->
+        from(p in Post, where: p.id > any(s))
+        |> normalize()
+      end
+
+      assert_raise Ecto.QueryError, fn ->
+        from(p in Post, where: p.id > all(s))
+        |> normalize()
+      end
     end
   end
 end

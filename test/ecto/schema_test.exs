@@ -361,6 +361,28 @@ defmodule Ecto.SchemaTest do
     end
   end
 
+  test "default of invalid type" do
+    assert_raise ArgumentError, ~s/value "1" is invalid for type :integer, can't set default/, fn ->
+      defmodule SchemaInvalidDefault do
+        use Ecto.Schema
+
+        schema "invalid_default" do
+          field :count, :integer, default: "1"
+        end
+      end
+    end
+
+    assert_raise ArgumentError, ~s/value 1 is invalid for type :string, can't set default/, fn ->
+      defmodule SchemaInvalidDefault do
+        use Ecto.Schema
+
+        schema "invalid_default" do
+          field :count, :string, default: 1
+        end
+      end
+    end
+  end
+
   test "invalid field type" do
     assert_raise ArgumentError, "invalid or unknown type {:apa} for field :name", fn ->
       defmodule SchemaInvalidFieldType do
@@ -753,7 +775,7 @@ defmodule Ecto.SchemaTest do
     end
   end
 
-  test "defining schema twice will result with meaningfull error" do
+  test "defining schema twice will result with meaningful error" do
     quoted = """
     defmodule DoubleSchema do
       use Ecto.Schema
@@ -771,6 +793,44 @@ defmodule Ecto.SchemaTest do
 
     assert_raise RuntimeError, message, fn ->
       Code.compile_string(quoted, "example.ex")
+    end
+  end
+
+  describe "type :any" do
+    test "raises on non-virtual" do
+      assert_raise ArgumentError, ~r"only virtual fields can have type :any", fn ->
+        defmodule FieldAny do
+          use Ecto.Schema
+
+          schema "anything" do
+            field :json, :any
+          end
+        end
+      end
+    end
+
+    defmodule FieldAnyVirtual do
+      use Ecto.Schema
+
+      schema "anything" do
+        field :json, :any, virtual: true
+      end
+    end
+
+    test "is allowed if virtual" do
+      assert %{json: :any} = FieldAnyVirtual.__changeset__()
+    end
+
+    defmodule FieldAnyNested do
+      use Ecto.Schema
+
+      schema "anything" do
+        field :json, {:array, :any}
+      end
+    end
+
+    test "is allowed if nested" do
+      assert %{json: {:array, :any}} = FieldAnyNested.__changeset__()
     end
   end
 end
