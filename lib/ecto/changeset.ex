@@ -147,9 +147,9 @@ defmodule Ecto.Changeset do
       associations). Use this on a `belongs_to` column to allow the association
       to be cleared out so that it can be set to a new value. Will set `action`
       on associated changesets to `:replace`
-    * `:update` - updates the association, available only for `has_one` and `belongs_to`.
-      This option will update all the fields given to the changeset including the id
-      for the association
+    * `:update` - updates the association, available only for `has_one`, `belongs_to`
+      and `embeds_one`. This option will update all the fields given to the changeset
+      including the id for the association
     * `:delete` - removes the association or related data from the database.
       This option has to be used carefully (see below). Will set `action` on associated
       changesets to `:replace`
@@ -275,20 +275,22 @@ defmodule Ecto.Changeset do
             constraints: [], filters: %{}, action: nil, types: nil,
             empty_values: @empty_values, repo: nil, repo_opts: []
 
-  @type t(data_type) :: %Changeset{valid?: boolean(),
-                        repo: atom | nil,
-                        repo_opts: Keyword.t,
-                        data: data_type,
-                        params: %{optional(String.t) => term} | nil,
-                        changes: %{optional(atom) => term},
-                        required: [atom],
-                        prepare: [(t -> t)],
-                        errors: [{atom, error}],
-                        constraints: [constraint],
-                        validations: [{atom, term}],
-                        filters: %{optional(atom) => term},
-                        action: action,
-                        types: nil | %{atom => Ecto.Type.t}}
+  @type t(data_type) :: %Changeset{
+          valid?: boolean(),
+          repo: atom | nil,
+          repo_opts: Keyword.t(),
+          data: data_type,
+          params: %{optional(String.t()) => term} | nil,
+          changes: %{optional(atom) => term},
+          required: [atom],
+          prepare: [(t -> t)],
+          errors: [{atom, error}],
+          constraints: [constraint],
+          validations: [{atom, term}],
+          filters: %{optional(atom) => term},
+          action: action,
+          types: nil | %{atom => Ecto.Type.t() | {:assoc, term()} | {:embed, term()}}
+        }
 
   @type t :: t(Ecto.Schema.t | map | nil)
   @type error :: {String.t, Keyword.t}
@@ -2155,7 +2157,7 @@ defmodule Ecto.Changeset do
   end
 
   defp validate_number(field, %Decimal{} = value, message, spec_key, _spec_function, target_value) do
-    result = Decimal.cmp(value, decimal_new(target_value))
+    result = Decimal.compare(value, decimal_new(target_value)) |> normalize_compare()
     case decimal_compare(result, spec_key) do
       true  -> nil
       false -> [{field, {message, validation: :number, kind: spec_key, number: target_value}}]
@@ -2166,6 +2168,17 @@ defmodule Ecto.Changeset do
     case apply(spec_function, [value, target_value]) do
       true  -> nil
       false -> [{field, {message, validation: :number, kind: spec_key, number: target_value}}]
+    end
+  end
+
+  # TODO: Remove me once we support Decimal 2.0 only
+  # Support mismatch between API for Decimal.compare/2 for versions 1.6 and 2.0
+  defp normalize_compare(result) do
+    case result do
+      %Decimal{coef: 1, sign: -1} -> :lt
+      %Decimal{coef: 0} -> :eq
+      %Decimal{coef: 1, sign: 1} -> :gt
+      _ -> result
     end
   end
 
