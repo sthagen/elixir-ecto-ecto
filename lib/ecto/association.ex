@@ -41,6 +41,7 @@ defmodule Ecto.Association do
                optional(atom) => any}
 
   alias Ecto.Query.{BooleanExpr, QueryExpr, FromExpr}
+  alias Ecto.Query.Builder.OrderBy
 
   @doc """
   Helper to check if a queryable is compiled.
@@ -383,6 +384,38 @@ defmodule Ecto.Association do
                 "or a {module, fun, args} tuple, got: `#{inspect defaults}`"
 
   @doc """
+  Validates `preload_order` for association named `name`.
+  """
+  def validate_preload_order!(name, preload_order) when is_list(preload_order) do
+    Enum.map(preload_order, fn
+      field when is_atom(field) ->
+        field
+
+      {direction, field} when is_atom(direction) and is_atom(field) ->
+        unless OrderBy.valid_direction?(direction) do
+          raise ArgumentError,
+          "expected `:preload_order` for #{inspect name} to be a keyword list or a list of atoms/fields, " <>
+            "got: `#{inspect preload_order}`, " <>
+            "`#{inspect direction}` is not a valid direction"
+        end
+
+        {direction, field}
+
+      item ->
+        raise ArgumentError,
+          "expected `:preload_order` for #{inspect name} to be a keyword list or a list of atoms/fields, " <>
+            "got: `#{inspect preload_order}`, " <>
+            "`#{inspect item}` is not valid"
+    end)
+  end
+
+  def validate_preload_order!(name, preload_order) do
+    raise ArgumentError,
+      "expected `:preload_order` for #{inspect name} to be a keyword list or a list of atoms/fields, " <>
+        "got: `#{inspect preload_order}`"
+  end
+
+  @doc """
   Merges source from query into to the given schema.
 
   In case the query does not have a source, returns
@@ -555,15 +588,16 @@ defmodule Ecto.Association.Has do
     * `on_replace` - The action taken on associations when schema is replaced
     * `defaults` - Default fields used when building the association
     * `relationship` - The relationship to the specified schema, default is `:child`
+    * `preload_order` - Default `order_by` of the association, used only by preload
   """
 
   @behaviour Ecto.Association
   @on_delete_opts [:nothing, :nilify_all, :delete_all]
-  @on_replace_opts [:raise, :mark_as_invalid, :delete, :nilify]
+  @on_replace_opts [:raise, :mark_as_invalid, :delete, :delete_if_exists, :nilify]
   @has_one_on_replace_opts @on_replace_opts ++ [:update]
   defstruct [:cardinality, :field, :owner, :related, :owner_key, :related_key, :on_cast,
              :queryable, :on_delete, :on_replace, where: [], unique: true, defaults: [],
-             relationship: :child, ordered: false]
+             relationship: :child, ordered: false, preload_order: []]
 
   @impl true
   def after_compile_validation(%{queryable: queryable, related_key: related_key}, env) do
@@ -621,6 +655,7 @@ defmodule Ecto.Association.Has do
     end
 
     defaults = Ecto.Association.validate_defaults!(name, opts[:defaults] || [])
+    preload_order = Ecto.Association.validate_preload_order!(name, opts[:preload_order] || [])
     where = opts[:where] || []
 
     unless is_list(where) do
@@ -638,7 +673,8 @@ defmodule Ecto.Association.Has do
       on_delete: on_delete,
       on_replace: on_replace,
       defaults: defaults,
-      where: where
+      where: where,
+      preload_order: preload_order
     }
   end
 
@@ -679,6 +715,15 @@ defmodule Ecto.Association.Has do
   end
 
   @impl true
+  def on_repo_change(%{on_replace: :delete_if_exists} = refl, parent_changeset,
+                     %{action: :replace} = changeset, adapter, opts) do
+    try do
+      on_repo_change(%{refl | on_replace: :delete}, parent_changeset, changeset, adapter, opts)
+    rescue
+      Ecto.StaleEntryError -> {:ok, nil}
+    end
+  end
+
   def on_repo_change(%{on_replace: on_replace} = refl, %{data: parent} = parent_changeset,
                      %{action: :replace} = changeset, adapter, opts) do
     changeset = case on_replace do
@@ -858,7 +903,7 @@ defmodule Ecto.Association.BelongsTo do
   """
 
   @behaviour Ecto.Association
-  @on_replace_opts [:raise, :mark_as_invalid, :delete, :nilify, :update]
+  @on_replace_opts [:raise, :mark_as_invalid, :delete, :delete_if_exists, :nilify, :update]
   defstruct [:field, :owner, :related, :owner_key, :related_key, :queryable, :on_cast,
              :on_replace, where: [], defaults: [], cardinality: :one, relationship: :parent,
              unique: true, ordered: false]
@@ -945,8 +990,17 @@ defmodule Ecto.Association.BelongsTo do
   end
 
   @impl true
-  def on_repo_change(%{on_replace: :nilify}, _parent_changeset, %{action: :replace}, _adapter, _opts) do
+  def on_repo_change(%{on_replace: :nilify}, _, %{action: :replace}, _adapter, _opts) do
     {:ok, nil}
+  end
+
+  def on_repo_change(%{on_replace: :delete_if_exists} = refl, parent_changeset,
+                     %{action: :replace} = changeset, adapter, opts) do
+    try do
+      on_repo_change(%{refl | on_replace: :delete}, parent_changeset, changeset, adapter, opts)
+    rescue
+      Ecto.StaleEntryError -> {:ok, nil}
+    end
   end
 
   def on_repo_change(%{on_replace: on_replace} = refl, parent_changeset,
@@ -1002,6 +1056,7 @@ defmodule Ecto.Association.ManyToMany do
     * `join_through` - Atom (representing a schema) or a string (representing a table)
       for many to many associations
     * `join_defaults` - A list of defaults for join associations
+    * `preload_order` - Default `order_by` of the association, used only by preload
   """
 
   @behaviour Ecto.Association
@@ -1010,7 +1065,7 @@ defmodule Ecto.Association.ManyToMany do
   defstruct [:field, :owner, :related, :owner_key, :queryable, :on_delete,
              :on_replace, :join_keys, :join_through, :on_cast, where: [],
              join_where: [], defaults: [], join_defaults: [], relationship: :child,
-             cardinality: :many, unique: false, ordered: false]
+             cardinality: :many, unique: false, ordered: false, preload_order: []]
 
   @impl true
   def after_compile_validation(%{queryable: queryable, join_through: join_through}, env) do
@@ -1084,6 +1139,7 @@ defmodule Ecto.Association.ManyToMany do
     join_where = opts[:join_where] || []
     defaults = Ecto.Association.validate_defaults!(name, opts[:defaults] || [])
     join_defaults = Ecto.Association.validate_defaults!(name, opts[:join_defaults] || [])
+    preload_order = Ecto.Association.validate_preload_order!(name, opts[:preload_order] || [])
 
     unless is_list(where) do
       raise ArgumentError, "expected `:where` for #{inspect name} to be a keyword list, got: `#{inspect where}`"
@@ -1112,7 +1168,8 @@ defmodule Ecto.Association.ManyToMany do
       on_replace: on_replace,
       unique: Keyword.get(opts, :unique, false),
       defaults: defaults,
-      where: where
+      where: where,
+      preload_order: preload_order
     }
   end
 

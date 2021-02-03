@@ -131,11 +131,21 @@ defmodule Ecto.Query.API do
   @doc """
   Evaluates to true if the provided subquery returns 1 or more rows.
 
-      from p in Post, as: :post, where: exists(from(c in Comment, where: parent_as(:post).id == c.post_id and c.replies_count > 5, select: 1))
+      from p in Post,
+        as: :post,
+        where:
+          exists(
+            from(
+              c in Comment,
+              where: parent_as(:post).id == c.post_id and c.replies_count > 5,
+              select: 1
+            )
+          )
 
-  This is best used in conjunction with `parent_as` to correlate the subquery with the parent query to test
-  some condition on related rows in a different table. In the above example the query returns posts which
-  have at least one comment that has more than 5 replies.
+  This is best used in conjunction with `parent_as` to correlate the subquery
+  with the parent query to test some condition on related rows in a different table.
+  In the above example the query returns posts which have at least one comment that
+  has more than 5 replies.
   """
   def exists(subquery), do: doc! [subquery]
 
@@ -352,7 +362,7 @@ defmodule Ecto.Query.API do
                  fragment("lower(?)", p.title) == ^title
       end
 
-  Every occurence of the `?` character will be interpreted as a place
+  Every occurrence of the `?` character will be interpreted as a place
   for additional argument. If the literal character `?` is required,
   it can be escaped with `\\\\?` (one escape for strings, another for
   fragment).

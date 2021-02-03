@@ -745,13 +745,19 @@ defmodule Ecto.ChangesetTest do
 
   test "apply_changes/1" do
     post = %Post{}
+    category = %Category{name: "bar"}
+
     assert post.title == ""
 
-    changeset = changeset(post, %{"title" => "foo"})
+    changeset = post
+    |> changeset(%{"title" => "foo"})
+    |> put_assoc(:category, category)
+
     changed_post = apply_changes(changeset)
 
     assert changed_post.__struct__ == post.__struct__
     assert changed_post.title == "foo"
+    assert changed_post.category_id == category.id
   end
 
   describe "apply_action/2" do
@@ -1493,7 +1499,7 @@ defmodule Ecto.ChangesetTest do
     assert changeset.changes == %{upvotes: 1}
     assert prepared_changes(changeset) == %{upvotes: 2}
 
-    # Assert default increment will rollover to 1 when the current one is equal or graeter than 2_147_483_647
+    # Assert default increment will rollover to 1 when the current one is equal or greater than 2_147_483_647
     changeset = changeset(%Post{upvotes: 2_147_483_647}, %{}) |> optimistic_lock(:upvotes)
     assert changeset.filters == %{upvotes: 2_147_483_647}
     assert changeset.changes == %{}

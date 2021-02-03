@@ -153,10 +153,15 @@ defmodule Ecto.Changeset do
     * `:delete` - removes the association or related data from the database.
       This option has to be used carefully (see below). Will set `action` on associated
       changesets to `:replace`
+    * `:delete_if_exists` - like `:delete` except that it ignores any stale entry
+      error. For instance, if you set `on_replace: :delete` but the replaced
+      resource was already deleted by a separate request, it will raise a
+      `Ecto.StaleEntryError`. `:delete_if_exists` makes it so it will only delete
+      if the entry still exists
 
-  The `:delete` option in particular must be used carefully as it would allow
-  users to delete any associated data by simply not sending any data for a given
-  field. If you need deletion, it is often preferred to manually mark the changeset
+  The `:delete` and `:delete_if_exists` options must be used carefully as they allow
+  users to delete any associated data by simply not sending the associated data.
+  If you need deletion, it is often preferred to manually mark the changeset
   for deletion if a `delete` field is set in the params, as in the example below:
 
       defmodule Comment do
@@ -258,7 +263,7 @@ defmodule Ecto.Changeset do
 
   ### Redacting fields in inspect
 
-  To hide a fields value from the inspect protocol of `Ecto.Changeset`, mark
+  To hide a field's value from the inspect protocol of `Ecto.Changeset`, mark
   the field as `redact: true` in the schema, and it will display with the
   value `**redacted**`.
   """
@@ -1263,6 +1268,8 @@ defmodule Ecto.Changeset do
       If no comment with such id exists, one is created on the fly.
       Since only a single comment was given, any other associated comment
       will be replaced. On all cases, it is expected the keys to be atoms.
+      Opposite to `cast_assoc` and `embed_assoc`, the given map (or struct)
+      is not validated in any way and will be inserted as is.
       This API is mostly used in scripts and tests, to make it straight-
       forward to create schemas with associations at once, such as:
 
@@ -1491,7 +1498,8 @@ defmodule Ecto.Changeset do
     Enum.reduce(changes, data, fn {key, value}, acc ->
       case Map.fetch(types, key) do
         {:ok, {tag, relation}} when tag in @relations ->
-          Map.put(acc, key, Relation.apply_changes(relation, value))
+          apply_relation_changes(acc, key, relation, value)
+
         {:ok, _} ->
           Map.put(acc, key, value)
         :error ->
@@ -1617,7 +1625,7 @@ defmodule Ecto.Changeset do
 
   An additional keyword list `keys` can be passed to provide additional
   contextual information for the error. This is useful when using
-  `traverse_errors/2`
+  `traverse_errors/2` and when translating errors with `Gettext`
 
   ## Examples
 
@@ -1632,6 +1640,13 @@ defmodule Ecto.Changeset do
       iex> changeset = add_error(changeset, :title, "empty", additional: "info")
       iex> changeset.errors
       [title: {"empty", [additional: "info"]}]
+      iex> changeset.valid?
+      false
+
+      iex> changeset = change(%Post{}, %{tags: ["ecto", "elixir", "x"]})
+      iex> changeset = add_error(changeset, :tags, "tag '%{val}' is too short", val: "x")
+      iex> changeset.errors
+      [tags: {"tag '%{val}' is too short", [val: "x"]}]
       iex> changeset.valid?
       false
   """
@@ -1732,7 +1747,7 @@ defmodule Ecto.Changeset do
   partial updates. For example, on `insert` all fields would be required,
   because their default values on the data are all `nil`, but on `update`,
   if you don't want to change a field that has been previously set,
-  you are not required to pass it as a paramater, since `validate_required/3`
+  you are not required to pass it as a parameter, since `validate_required/3`
   won't add an error for missing changes as long as the value in the
   data given to the `changeset` is not empty.
 
@@ -1962,8 +1977,11 @@ defmodule Ecto.Changeset do
   end
 
   @doc ~S"""
-  Validates a change, of type enum, is a subset of the given enumerable. Like
-  `validate_inclusion/4` for lists.
+  Validates a change, of type enum, is a subset of the given enumerable. 
+
+  This validates if a list of values belongs to the given enumerable.
+  If you need to validate if a single value is inside the given enumerable,
+  you should use `validate_inclusion/4` instead.
 
   ## Options
 
@@ -2944,6 +2962,17 @@ defmodule Ecto.Changeset do
         end
       {_, _}, acc ->
         acc
+    end
+  end
+
+  defp apply_relation_changes(acc, key, relation, value) do
+    relation_changed = Relation.apply_changes(relation, value)
+
+    acc = Map.put(acc, key, relation_changed)
+
+    case relation do
+      %Ecto.Association.BelongsTo{} -> Map.put(acc, relation.owner_key, relation_changed.id)
+      _ -> acc
     end
   end
 end

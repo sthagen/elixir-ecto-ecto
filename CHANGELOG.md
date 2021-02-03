@@ -1,5 +1,32 @@
 # Changelog for v3.x
 
+## v3.6.0-dev
+
+### Enhancements
+
+  * [Ecto.Changeset] Support `:repo_opts` in `unsafe_validate_unique`
+  * [Ecto.Enum] Allow enums to map to custom values
+  * [Ecto.Repo] Add `placeholders` support to `insert_all`
+  * [Ecto.Schema] Support `:preload_order` on `has_many` and `many_to_many` associations
+  * [Ecto.UUID] Add bang UUID conversion methods
+
+### Bug fixes
+
+  * [Ecto.Changeset] Change `apply_changes/1` to add the relation to the `struct.relation_id` if relation struct is persisted
+  * [Ecto.Query] Remove unnecessary INNER JOIN in many to many association query
+  * [Ecto.Schema] Raise `ArgumentError` when default has invalid type
+
+## v3.5.6 (2021-01-20)
+
+### Enhancements
+
+  * [Ecto.Schema] Support `on_replace: :delete_if_exists` on associations
+
+### Bug fixes
+
+  * [Ecto.Query] Allow unary minus operator in query expressions
+  * [Ecto.Schema] Allow nil values on typed maps
+
 ## v3.5.5 (2020-11-12)
 
 ### Enhancements
@@ -79,6 +106,7 @@ v3.5 requires Elixir v1.8+.
   * [Ecto.Schema] Do not validate uniqueness if there is a prior error on the field
   * [Ecto.Schema] Allow `redact: true` in `field`
   * [Ecto.Schema] Support parameterized types via `Ecto.ParameterizedType`
+  * [Ecto.Schema] Rewrite embeds and assocs as parameterized types. This means `__schema__(:type, assoc_or_embed)` now returns a parameterized type. To check if something is an association, use `__schema__(:assocs)` or `__schema__(:embeds)` instead
 
 ## v3.4.6 (2020-08-07)
 
@@ -292,7 +320,7 @@ v3.2 requires Elixir v1.6+.
 
   * [Ecto.Association] Ensure we delete an association before inserting when replacing on `has_one`
   * [Ecto.Query] Do not allow interpolated `nil` in literal keyword list when building query
-  * [Ecto.Query] Do not remove literals from combinations, otherwise UNION/INTERSECTION queries may not match the nummber of values in `select`
+  * [Ecto.Query] Do not remove literals from combinations, otherwise UNION/INTERSECTION queries may not match the number of values in `select`
   * [Ecto.Query] Do not attempt to merge at compile-time non-keyword lists given to `select_merge`
   * [Ecto.Repo] Do not override `:through` associations on preload unless forcing
   * [Ecto.Repo] Make sure prefix option cascades to combinations and recursive queries
