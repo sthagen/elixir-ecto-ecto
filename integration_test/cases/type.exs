@@ -409,24 +409,20 @@ defmodule Ecto.Integration.TypeTest do
     decimal = Decimal.new("1.0")
     TestRepo.insert!(%Post{cost: decimal})
 
-    assert [^decimal] = TestRepo.all(from p in Post, where: p.cost == ^decimal, select: p.cost)
-    assert [^decimal] = TestRepo.all(from p in Post, where: p.cost == ^1.0, select: p.cost)
-    assert [^decimal] = TestRepo.all(from p in Post, where: p.cost == ^1, select: p.cost)
-    assert [^decimal] = TestRepo.all(from p in Post, where: p.cost == 1.0, select: p.cost)
-    assert [^decimal] = TestRepo.all(from p in Post, where: p.cost == 1, select: p.cost)
-
-    assert TestRepo.all(from p in Post, select: p.cost * 2) == [Decimal.new("2.0")]
-    assert TestRepo.all(from p in Post, select: p.cost - p.cost) == [Decimal.new("0.0")]
-  end
-
-  @tag :decimal_type
-  @tag :decimal_precision
-  test "decimal type cast" do
-    decimal = Decimal.new("1.0")
-    TestRepo.insert!(%Post{cost: decimal})
-
-    assert TestRepo.all(from p in Post, select: type(2 + ^"2", p.cost)) == [Decimal.new("4")]
-    assert TestRepo.all(from p in Post, select: type(2.0 + ^"2", p.cost)) == [Decimal.new("4.0")]
+    [cost] = TestRepo.all(from p in Post, where: p.cost == ^decimal, select: p.cost)
+    assert Decimal.equal?(decimal, cost)
+    [cost] = TestRepo.all(from p in Post, where: p.cost == ^1.0, select: p.cost)
+    assert Decimal.equal?(decimal, cost)
+    [cost] = TestRepo.all(from p in Post, where: p.cost == ^1, select: p.cost)
+    assert Decimal.equal?(decimal, cost)
+    [cost] = TestRepo.all(from p in Post, where: p.cost == 1.0, select: p.cost)
+    assert Decimal.equal?(decimal, cost)
+    [cost] = TestRepo.all(from p in Post, where: p.cost == 1, select: p.cost)
+    assert Decimal.equal?(decimal, cost)
+    [cost] = TestRepo.all(from p in Post, select: p.cost * 2)
+    assert Decimal.equal?(Decimal.new("2.0"), cost)
+    [cost] = TestRepo.all(from p in Post, select: p.cost - p.cost)
+    assert Decimal.equal?(Decimal.new("0.0"), cost)
   end
 
   @tag :decimal_type
@@ -437,7 +433,8 @@ defmodule Ecto.Integration.TypeTest do
 
     assert [1] = TestRepo.all(from p in Post, select: type(sum(p.cost), :integer))
     assert [1.0] = TestRepo.all(from p in Post, select: type(sum(p.cost), :float))
-    assert [^decimal] = TestRepo.all(from p in Post, select: type(sum(p.cost), :decimal))
+    [cost] = TestRepo.all(from p in Post, select: type(sum(p.cost), :decimal))
+    assert Decimal.equal?(decimal, cost)
   end
 
   @tag :decimal_type

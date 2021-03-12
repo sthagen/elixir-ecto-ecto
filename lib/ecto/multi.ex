@@ -8,7 +8,8 @@ defmodule Ecto.Multi do
   is given a name that is unique and will identify its result in case of
   success or failure.
 
-  All operations will be executed in the order they were added.
+  If a multi is valid (i.e. all the changesets in it are valid),
+  all operations will be executed in the order they were added.
 
   The `Ecto.Multi` structure should be considered opaque. You can use
   `%Ecto.Multi{}` to pattern match the type, but accessing fields or
@@ -126,6 +127,7 @@ defmodule Ecto.Multi do
   @typep operation :: {:changeset, Changeset.t, Keyword.t} |
                       {:run, run} |
                       {:put, any} |
+                      {:inspect, Keyword.t} |
                       {:merge, merge} |
                       {:update_all, Ecto.Query.t, Keyword.t} |
                       {:delete_all, Ecto.Query.t, Keyword.t} |
@@ -196,11 +198,11 @@ defmodule Ecto.Multi do
         raise ArgumentError, """
         error when merging the following Ecto.Multi structs:
 
-        #{inspect lhs}
+        #{Kernel.inspect lhs}
 
-        #{inspect rhs}
+        #{Kernel.inspect rhs}
 
-        both declared operations: #{inspect common}
+        both declared operations: #{Kernel.inspect common}
         """
     end
   end
@@ -409,7 +411,7 @@ defmodule Ecto.Multi do
 
   defp put_action(%{action: original}, action) do
     raise ArgumentError, "you provided a changeset with an action already set " <>
-      "to #{inspect original} when trying to #{action} it"
+      "to #{Kernel.inspect original} when trying to #{action} it"
   end
 
   @doc """
@@ -577,7 +579,7 @@ defmodule Ecto.Multi do
   defp add_operation(%Multi{} = multi, name, operation) do
     %{operations: operations, names: names} = multi
     if MapSet.member?(names, name) do
-      raise "#{inspect name} is already a member of the Ecto.Multi: \n#{inspect multi}"
+      raise "#{Kernel.inspect name} is already a member of the Ecto.Multi: \n#{Kernel.inspect multi}"
     else
       %{multi | operations: [{name, operation} | operations],
                 names: MapSet.put(names, name)}
@@ -610,13 +612,54 @@ defmodule Ecto.Multi do
 
       Ecto.Multi.new()
       |> Ecto.Multi.put(:params, params)
-      |> Ecto.Multi.insert(:user, fn changes -> &User.changeset(changes.params) end)
-      |> Ecto.Multi.insert(:person, fn changes -> &Person.changeset(changes.user, changes.params) end)
+      |> Ecto.Multi.insert(:user, fn changes -> User.changeset(changes.params) end)
+      |> Ecto.Multi.insert(:person, fn changes -> Person.changeset(changes.user, changes.params) end)
       |> MyApp.Repo.transaction()
   """
   @spec put(t, name, any) :: t
   def put(multi, name, value) do
     add_operation(multi, name, {:put, value})
+  end
+
+  @doc """
+  Inspects results from a Multi
+
+  By default, the name is shown as a label to the inspect, custom labels are
+  supported through the `IO.inspect/2` `label` option.
+
+  ## Options
+
+  All options for IO.inspect/2 are supported, it also support the following ones:
+
+    * `:only` - A field or a list of fields to inspect, will print the entire
+      map by default.
+
+  ## Examples
+
+      Ecto.Multi.new()
+      |> Ecto.Multi.insert(:person_a, changeset)
+      |> Ecto.Multi.insert(:person_b, changeset)
+      |> Ecto.Multi.inspect()
+      |> MyApp.Repo.transaction()
+
+  Prints:
+      %{person_a: %Person{...}, person_b: %Person{...}}
+
+  We can use the `:only` option to limit which fields will be printed:
+
+      Ecto.Multi.new()
+      |> Ecto.Multi.insert(:person_a, changeset)
+      |> Ecto.Multi.insert(:person_b, changeset)
+      |> Ecto.Multi.inspect(only: :person_a)
+      |> MyApp.Repo.transaction()
+
+  Prints:
+      %{person_a: %Person{...}}
+
+  """
+  @spec inspect(t, Keyword.t) :: t
+  def inspect(multi, opts \\ []) do
+    Map.update!(multi, :operations, &[{:inspect, {:inspect, opts}} | &1])
   end
 
   @doc false
@@ -659,6 +702,16 @@ defmodule Ecto.Multi do
     end
   end
 
+  defp apply_operation({_name, {:inspect, opts}}, _repo, _wrap_, _return, {acc, names}) do
+    if opts[:only] do
+      acc |> Map.take(List.wrap(opts[:only])) |> IO.inspect(opts)
+    else
+      IO.inspect(acc, opts)
+    end
+
+    {acc, names}
+  end
+
   defp apply_operation({name, operation}, repo, wrap, return, {acc, names}) do
     case apply_operation(operation, acc, {wrap, return}, repo) do
       {:ok, value} ->
@@ -666,7 +719,7 @@ defmodule Ecto.Multi do
       {:error, value} ->
         return.({name, value, acc})
       other ->
-        raise "expected Ecto.Multi callback named `#{inspect(name)}` to return either {:ok, value} or {:error, value}, got: #{inspect(other)}"
+        raise "expected Ecto.Multi callback named `#{Kernel.inspect name}` to return either {:ok, value} or {:error, value}, got: #{Kernel.inspect other}"
     end
   end
 
@@ -698,7 +751,7 @@ defmodule Ecto.Multi do
         {Map.merge(changes, new_changes), MapSet.union(names, new_names)}
       common ->
         raise "cannot merge multi, the following operations were found in " <>
-          "both Ecto.Multi: #{inspect common}"
+          "both Ecto.Multi: #{Kernel.inspect common}"
     end
   end
 
