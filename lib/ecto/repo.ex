@@ -747,7 +747,7 @@ defmodule Ecto.Repo do
   @doc """
   Calculate the given `aggregate` over the given `field`.
 
-  See `aggregate/2` for general considerations and options.
+  See `c:aggregate/3` for general considerations and options.
 
   ## Examples
 
@@ -1236,8 +1236,8 @@ defmodule Ecto.Repo do
       placeholders = %{blob: large_blob_of_text(...)}
 
       entries = [
-        %Post{title: "v1", body: {:placeholder, :blob}},
-        %Post{title: "v2", body: {:placeholder, :blob}}
+        %{title: "v1", body: {:placeholder, :blob}},
+        %{title: "v2", body: {:placeholder, :blob}}
       ]
 
       Repo.insert_all(entries, placeholders: placeholders)
