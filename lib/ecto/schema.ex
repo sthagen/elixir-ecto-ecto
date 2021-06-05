@@ -452,6 +452,8 @@ defmodule Ecto.Schema do
   @type has_one(t) :: t | Ecto.Association.NotLoaded.t()
   @type has_many(t) :: [t] | Ecto.Association.NotLoaded.t()
   @type many_to_many(t) :: [t] | Ecto.Association.NotLoaded.t()
+  @type embeds_one(t) :: t
+  @type embeds_many(t) :: [t]
 
   @doc false
   defmacro __using__(_) do
@@ -2154,21 +2156,30 @@ defmodule Ecto.Schema do
   end
 
   defp check_field_type!(mod, name, type, opts) do
+    kind =
+      cond do
+        composite?(type, name) -> :composite
+        not is_atom(type) -> nil
+        Ecto.Type.base?(type) -> :base
+        Code.ensure_compiled(type) == {:module, type} -> :module
+        true -> nil
+      end
+
     cond do
-      composite?(type, name) ->
+      kind == :base ->
+        type
+
+      kind == :composite ->
         {outer_type, inner_type} = type
         {outer_type, check_field_type!(mod, name, inner_type, opts)}
 
-      Ecto.Type.base?(type) ->
+      kind == :module and function_exported?(type, :type, 0) ->
         type
 
-      is_atom(type) and Code.ensure_compiled(type) == {:module, type} and function_exported?(type, :type, 0) ->
-        type
-
-      is_atom(type) and Code.ensure_compiled(type) == {:module, type} and function_exported?(type, :type, 1) ->
+      kind == :module and function_exported?(type, :type, 1) ->
         Ecto.ParameterizedType.init(type, Keyword.merge(opts, field: name, schema: mod))
 
-      is_atom(type) and function_exported?(type, :__schema__, 1) ->
+      kind == :module and function_exported?(type, :__schema__, 1) ->
         raise ArgumentError,
           "schema #{inspect type} is not a valid type for field #{inspect name}." <>
           " Did you mean to use belongs_to, has_one, has_many, embeds_one, or embeds_many instead?"

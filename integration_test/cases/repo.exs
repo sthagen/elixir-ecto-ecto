@@ -882,7 +882,7 @@ defmodule Ecto.Integration.RepoTest do
   end
 
   describe "insert_all with source query" do
-    @tag :upsert
+    @tag :upsert_all
     @tag :with_conflict_target
     @tag :concat
     test "insert_all with query and conflict target" do
@@ -922,7 +922,7 @@ defmodule Ecto.Integration.RepoTest do
       assert [%Post{id: ^expected_id, title: ^expected_title}] = returns
     end
 
-    @tag :upsert
+    @tag :upsert_all
     @tag :without_conflict_target
     @tag :concat
     test "insert_all with query and on_conflict" do
@@ -1068,6 +1068,46 @@ defmodule Ecto.Integration.RepoTest do
 
       query = from(b in Barebone, select: b.num)
       assert [100] == TestRepo.all(query)
+    end
+
+    @tag :upsert_all
+    @tag :with_conflict_target
+    test "Repo.insert_all upserts and fills in placeholders with conditioned on_conflict query" do
+      do_not_update_title = "don't touch me"
+
+      on_conflict =
+        from p in Post, update: [set: [title: "updated"]], where: p.title != ^do_not_update_title
+
+      placeholders = %{posted: Date.utc_today(), title: "title"}
+
+      post1 = [
+        title: {:placeholder, :title},
+        uuid: Ecto.UUID.generate(),
+        posted: {:placeholder, :posted}
+      ]
+
+      post2 = [
+        title: do_not_update_title,
+        uuid: Ecto.UUID.generate(),
+        posted: {:placeholder, :posted}
+      ]
+
+      assert TestRepo.insert_all(Post, [post1, post2],
+               placeholders: placeholders,
+               on_conflict: on_conflict,
+               conflict_target: [:uuid]
+             ) ==
+               {2, nil}
+
+      # only update first post
+      assert TestRepo.insert_all(Post, [post1, post2],
+               placeholders: placeholders,
+               on_conflict: on_conflict,
+               conflict_target: [:uuid]
+             ) ==
+               {1, nil}
+
+      assert TestRepo.aggregate(where(Post, title: "updated"), :count) == 1
     end
   end
 

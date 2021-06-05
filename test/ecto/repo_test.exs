@@ -39,6 +39,18 @@ defmodule Ecto.RepoTest do
     end
   end
 
+  defmodule MySchemaChild do
+    use Ecto.Schema
+
+    schema "my_schema_child" do
+      field :a, :string
+    end
+
+    def changeset(struct, params) do
+      Ecto.Changeset.cast(struct, params, [:a])
+    end
+  end
+
   defmodule MySchema do
     use Ecto.Schema
 
@@ -49,6 +61,7 @@ defmodule Ecto.RepoTest do
       field :w, :string, virtual: true
       field :array, {:array, :string}
       field :map, {:map, :string}
+      has_many :children, MySchemaChild
     end
   end
 
@@ -529,13 +542,27 @@ defmodule Ecto.RepoTest do
   describe "placeholders" do
     @describetag :placeholders
 
-    test "Repo.insert_all throws when placeholder key is not found" do
+    test "Repo.insert_all supports placeholder keys with schema" do
+      TestRepo.insert_all(MySchema, [%{x: {:placeholder, :foo}}], placeholders: %{foo: "bar"})
+      assert_receive {:insert_all, meta, query}
+      assert meta.placeholders == ["bar"]
+      assert query == [[x: {:placeholder, 1}]]
+    end
+
+    test "Repo.insert_all supports placeholder keys without schema" do
+      TestRepo.insert_all("my_schema", [%{x: {:placeholder, :foo}}], placeholders: %{foo: "bar"})
+      assert_receive {:insert_all, meta, query}
+      assert meta.placeholders == ["bar"]
+      assert query == [[x: {:placeholder, 1}]]
+    end
+
+    test "Repo.insert_all raises when placeholder key is not found" do
       assert_raise KeyError, fn ->
         TestRepo.insert_all(MySchema, [%{x: {:placeholder, :bad_key}}], placeholders: %{foo: 100})
       end
     end
 
-    test "Repo.insert_all throws when placeholder key is used for different types" do
+    test "Repo.insert_all raises when placeholder key is used for different types" do
       placeholders = %{uuid_key: Ecto.UUID.generate}
       ph_key = {:placeholder, :uuid_key}
       entries = [%{bid: ph_key, string: ph_key}]
@@ -545,7 +572,7 @@ defmodule Ecto.RepoTest do
       end
     end
 
-    test "Repo.insert_all throws when placeholder key is used with invalid types" do
+    test "Repo.insert_all raises when placeholder key is used with invalid types" do
       placeholders = %{string_key: "foo"}
       entries = [%{n: {:placeholder, :string_key}}]
 
@@ -1113,6 +1140,26 @@ defmodule Ecto.RepoTest do
       assert {:x, {"stop", []}} in changeset.errors
     end
 
+    test "insert has_many with prepare_changes that returns invalid changeset" do
+      changeset =
+        prepare_changeset()
+        |> Ecto.Changeset.prepare_changes(fn changeset ->
+          children_changeset =
+            changeset
+            |> Ecto.Changeset.cast(%{children: [%{a: "one"}]}, [])
+            |> Ecto.Changeset.cast_assoc(:children)
+            |> Ecto.Changeset.get_change(:children, [])
+            |> Enum.map(fn changeset ->
+              Ecto.Changeset.add_error(changeset, :a, "stop")
+            end)
+
+          Ecto.Changeset.put_assoc(changeset, :children, children_changeset)
+        end)
+
+      assert {:error, %Ecto.Changeset{} = changeset} = TestRepo.insert(changeset)
+      assert {:a, {"stop", []}} in hd(changeset.changes.children).errors
+    end
+
     test "update runs prepare callbacks in transaction" do
       changeset = prepare_changeset()
       TestRepo.update!(changeset)
@@ -1132,6 +1179,26 @@ defmodule Ecto.RepoTest do
       assert {:x, {"stop", []}} in changeset.errors
     end
 
+    test "update has_many with prepare_changes that returns invalid changeset" do
+      changeset =
+        prepare_changeset()
+        |> Ecto.Changeset.prepare_changes(fn changeset ->
+          children_changeset =
+            changeset
+            |> Ecto.Changeset.cast(%{children: [%{a: "one"}]}, [])
+            |> Ecto.Changeset.cast_assoc(:children)
+            |> Ecto.Changeset.get_change(:children, [])
+            |> Enum.map(fn changeset ->
+              Ecto.Changeset.add_error(changeset, :a, "stop")
+            end)
+
+          Ecto.Changeset.put_assoc(changeset, :children, children_changeset)
+        end)
+
+      assert {:error, %Ecto.Changeset{} = changeset} = TestRepo.update(changeset)
+      assert {:a, {"stop", []}} in hd(changeset.changes.children).errors
+    end
+
     test "delete runs prepare callbacks in transaction" do
       changeset = prepare_changeset()
       TestRepo.delete!(changeset)
@@ -1149,6 +1216,26 @@ defmodule Ecto.RepoTest do
 
       assert {:error, %Ecto.Changeset{} = changeset} = TestRepo.delete(changeset)
       assert {:x, {"stop", []}} in changeset.errors
+    end
+
+    test "delete schema with a has_many assoc with prepare_changes that returns invalid changeset" do
+      changeset =
+        prepare_changeset()
+        |> Ecto.Changeset.prepare_changes(fn changeset ->
+          children_changeset =
+            changeset
+            |> Ecto.Changeset.cast(%{children: [%{a: "one"}]}, [])
+            |> Ecto.Changeset.cast_assoc(:children)
+            |> Ecto.Changeset.get_change(:children, [])
+            |> Enum.map(fn changeset ->
+              Ecto.Changeset.add_error(changeset, :a, "stop")
+            end)
+
+          Ecto.Changeset.put_assoc(changeset, :children, children_changeset)
+        end)
+
+      assert {:error, %Ecto.Changeset{} = changeset} = TestRepo.delete(changeset)
+      assert {:a, {"stop", []}} in hd(changeset.changes.children).errors
     end
 
     test "on embeds" do
@@ -1503,6 +1590,14 @@ defmodule Ecto.RepoTest do
 
       assert {:ok, TestRepo} = TestRepo.transaction(fun)
       assert_received {:transaction, _}
+    end
+  end
+
+  describe "all_running" do
+    test "lists all running repositories" do
+      assert Ecto.Repo.all_running() == [Ecto.TestRepo]
+      pid = start_supervised! {Ecto.TestRepo, name: nil}
+      assert Enum.sort(Ecto.Repo.all_running()) == [Ecto.TestRepo, pid]
     end
   end
 end
