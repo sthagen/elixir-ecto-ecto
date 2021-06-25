@@ -88,6 +88,18 @@ defmodule Ecto.SchemaTest do
     assert Ecto.get_meta(schema, :context) == "foobar"
   end
 
+  test "raises on invalid state in metadata" do
+    assert_raise ArgumentError, "invalid state nil", fn ->
+      Ecto.put_meta(%Schema{}, state: nil)
+    end
+  end
+
+  test "raises on unknown meta key in metadata" do
+    assert_raise ArgumentError, "unknown meta key :foo", fn ->
+      Ecto.put_meta(%Schema{}, foo: :bar)
+    end
+  end
+
   test "preserves schema on up to date metadata" do
     old_schema = %Schema{}
     new_schema = Ecto.put_meta(old_schema, source: "my schema", state: :built, prefix: nil)
@@ -170,19 +182,28 @@ defmodule Ecto.SchemaTest do
 
     embedded_schema do
       field :name,  :string, default: "eric"
+      field :password, :string, redact: true
     end
   end
 
   test "embedded schema" do
     assert EmbeddedSchema.__schema__(:source)          == nil
     assert EmbeddedSchema.__schema__(:prefix)          == nil
-    assert EmbeddedSchema.__schema__(:fields)          == [:id, :name]
+    assert EmbeddedSchema.__schema__(:fields)          == [:id, :name, :password]
     assert EmbeddedSchema.__schema__(:primary_key)     == [:id]
     assert EmbeddedSchema.__schema__(:autogenerate_id) == {:id, :id, :binary_id}
   end
 
   test "embedded schema does not have metadata" do
     refute match?(%{__meta__: _}, %EmbeddedSchema{})
+  end
+
+  test "embedded redacted_fields" do
+    assert EmbeddedSchema.__schema__(:redact_fields) == [:password]
+  end
+
+  test "embedded derives inspect" do
+    refute inspect(%EmbeddedSchema{password: "hunter2"}) =~ "hunter2"
   end
 
   defmodule CustomEmbeddedSchema do
@@ -682,6 +703,36 @@ defmodule Ecto.SchemaTest do
 
         schema "assoc" do
           has_many :posts, Post, unknown: :option
+        end
+      end
+    end
+  end
+
+  test "has_* validates :on_delete option value" do
+    msg =
+      "invalid :on_delete option for :posts. The only valid options are: " <>
+        "`:nothing`, `:nilify_all`, `:delete_all`"
+
+    assert_raise ArgumentError, msg, fn ->
+      defmodule InvalidHasOption do
+        use Ecto.Schema
+
+        schema "assoc" do
+          has_many :posts, Post, on_delete: nil
+        end
+      end
+    end
+
+    msg =
+      "invalid :on_delete option for :post. The only valid options are: " <>
+        "`:nothing`, `:nilify_all`, `:delete_all`"
+
+    assert_raise ArgumentError, msg, fn ->
+      defmodule InvalidHasOption do
+        use Ecto.Schema
+
+        schema "assoc" do
+          has_one :post, Post, on_delete: nil
         end
       end
     end

@@ -1848,12 +1848,67 @@ defmodule Ecto.ChangesetTest do
     }
   end
 
+  ## traverse_validations
+
+  test "traverses changeset validations" do
+    changeset =
+      changeset(%{"title" => "title", "body" => "hi", "upvotes" => :bad})
+      |> validate_length(:body, min: 3)
+      |> validate_format(:body, ~r/888/)
+      |> validate_inclusion(:upvotes, [:good, :bad])
+
+    validations = traverse_validations(changeset, fn
+      {:length, opts} -> {:length, "#{Keyword.get(opts, :min, 0)}-#{Keyword.get(opts, :max, 32)}"}
+      {:format, %Regex{source: source}} -> {:format, "/#{source}/"}
+      {:inclusion, enum} -> {:inclusion, Enum.join(enum, ", ")}
+      {other, opts} -> {other, inspect(opts)}
+    end)
+
+    assert validations == %{
+      body: [format: "/888/", length: "3-32"],
+      upvotes: [inclusion: "good, bad"],
+    }
+  end
+
+  test "traverses changeset validations with field" do
+    changeset =
+      changeset(%{"title" => "title", "body" => "hi", "upvotes" => :bad})
+      |> validate_length(:body, min: 3)
+      |> validate_format(:body, ~r/888/)
+      |> validate_inclusion(:upvotes, [:good, :bad])
+
+    validations = traverse_validations(changeset, fn
+      %Ecto.Changeset{}, field, {:length, opts} ->
+        "#{field} must be #{Keyword.get(opts, :min, 0)}-#{Keyword.get(opts, :max, 32)} long"
+      %Ecto.Changeset{}, field, {:format, %Regex{source: source}} ->
+        "#{field} must match /#{source}/"
+      %Ecto.Changeset{}, field, {:inclusion, enum} ->
+        "#{field} must be one of: #{Enum.join(enum, ", ")}"
+    end)
+
+    assert validations == %{
+      body: ["body must match /888/", "body must be 3-32 long"],
+      upvotes: ["upvotes must be one of: good, bad"],
+    }
+  end
+
   ## inspect
 
   defmodule RedactedSchema do
     use Ecto.Schema
 
     schema "redacted_schema" do
+      field :password, :string, redact: true
+      field :username, :string
+      field :display_name, :string, redact: false
+      field :virtual_pass, :string, redact: true, virtual: true
+    end
+  end
+
+  defmodule RedactedEmbeddedSchema do
+    use Ecto.Schema
+
+    embedded_schema do
       field :password, :string, redact: true
       field :username, :string
       field :display_name, :string, redact: false
@@ -1880,6 +1935,10 @@ defmodule Ecto.ChangesetTest do
 
     test "redacts fields marked redact: true" do
       changeset = Ecto.Changeset.cast(%RedactedSchema{}, %{password: "hunter2"}, [:password])
+      refute inspect(changeset) =~ "hunter2"
+      assert inspect(changeset) =~ "**redacted**"
+
+      changeset = Ecto.Changeset.cast(%RedactedEmbeddedSchema{}, %{password: "hunter2"}, [:password])
       refute inspect(changeset) =~ "hunter2"
       assert inspect(changeset) =~ "**redacted**"
     end
