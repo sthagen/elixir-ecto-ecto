@@ -1192,14 +1192,15 @@ defmodule Ecto.Changeset do
 
   ## Examples
 
-      iex> changeset = change(%Post{author: "bar"}, %{title: "foo"})
+      iex> changeset = change(%Post{}, %{title: "foo"})
       iex> changeset = put_change(changeset, :title, "bar")
       iex> changeset.changes
       %{title: "bar"}
 
-      iex> changeset = put_change(changeset, :author, "bar")
+      iex> changeset = change(%Post{title: "foo"})
+      iex> changeset = put_change(changeset, :title, "foo")
       iex> changeset.changes
-      %{title: "bar"}
+      %{}
 
   """
   @spec put_change(t, atom, term) :: t
@@ -1762,7 +1763,7 @@ defmodule Ecto.Changeset do
   won't add an error for missing changes as long as the value in the
   data given to the `changeset` is not empty.
 
-  Do not use this function to validate associations are required,
+  Do not use this function to validate associations that are required,
   instead pass the `:required` option to `cast_assoc/3`.
 
   Opposite to other validations, calling this function does not store
@@ -2536,17 +2537,17 @@ defmodule Ecto.Changeset do
   In order to use the check constraint, the first step is
   to define the check constraint in a migration:
 
-      create constraint("users", :price_must_be_positive, check: "price > 0")
+      create constraint("users", :age_must_be_positive, check: "age > 0")
 
   Now that a constraint exists, when modifying users, we could
   annotate the changeset with a check constraint so Ecto knows
   how to convert it into an error message:
 
-      cast(user, params, [:price])
-      |> check_constraint(:price, name: :price_must_be_positive)
+      cast(user, params, [:age])
+      |> check_constraint(:age, name: :age_must_be_positive)
 
   Now, when invoking `c:Ecto.Repo.insert/2` or `c:Ecto.Repo.update/2`, if the
-  price is not positive, it will be converted into an error and
+  age is not positive, it will be converted into an error and
   `{:error, changeset}` returned by the repository. Note that the error
   will occur only after hitting the database so it will not be visible
   until all other validations pass.

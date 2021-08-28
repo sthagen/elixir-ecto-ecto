@@ -37,7 +37,7 @@ defmodule Ecto.Enum do
   by an atom in the list will be invalid.
 
   The helper function `mappings/2` returns the mappings for a given schema and
-  field, which can be used in places like form drop-downs. For example, given 
+  field, which can be used in places like form drop-downs. For example, given
   the following schema:
 
       defmodule EnumSchema do
@@ -50,7 +50,7 @@ defmodule Ecto.Enum do
 
   you can call `mappings/2` like this:
 
-      Ecto.Enum.values(EnumSchema, :my_enum)
+      Ecto.Enum.mappings(EnumSchema, :my_enum)
       #=> [foo: "foo", bar: "bar", baz: "baz"]
 
   If you want the values only, you can use `Ecto.Enum.values/2`, and if you want
@@ -164,7 +164,7 @@ defmodule Ecto.Enum do
   def embed_as(_, _), do: :self
 
   @doc "Returns the possible values for a given schema and field"
-  @spec values(Ecto.Schema.t, atom) :: [atom()]
+  @spec values(module, atom) :: [atom()]
   def values(schema, field) do
     schema
     |> mappings(field)
@@ -172,7 +172,7 @@ defmodule Ecto.Enum do
   end
 
   @doc "Returns the possible dump values for a given schema and field"
-  @spec dump_values(Ecto.Schema.t, atom) :: [String.t()] | [integer()]
+  @spec dump_values(module, atom) :: [String.t()] | [integer()]
   def dump_values(schema, field) do
     schema
     |> mappings(field)
@@ -180,12 +180,13 @@ defmodule Ecto.Enum do
   end
 
   @doc "Returns the mappings for a given schema and field"
-  @spec mappings(Ecto.Schema.t, atom) :: Keyword.t
+  @spec mappings(module, atom) :: Keyword.t()
   def mappings(schema, field) do
     try do
       schema.__changeset__()
     rescue
-      _ in UndefinedFunctionError -> raise ArgumentError, "#{inspect schema} is not an Ecto schema"
+      _ in UndefinedFunctionError ->
+        raise ArgumentError, "#{inspect(schema)} is not an Ecto schema"
     else
       %{^field => {:parameterized, Ecto.Enum, %{mappings: mappings}}} -> mappings
       %{^field => {_, {:parameterized, Ecto.Enum, %{mappings: mappings}}}} -> mappings
