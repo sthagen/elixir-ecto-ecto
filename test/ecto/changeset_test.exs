@@ -36,18 +36,41 @@ defmodule Ecto.ChangesetTest do
     end
   end
 
+  defmodule CustomSlug do
+    use Ecto.Type
+
+    def type, do: :string
+    def cast(val), do: {:ok, val}
+    def load(val), do: {:ok, val}
+    def dump(val), do: {:ok, val}
+  end
+
+  defmodule CustomTag do
+    use Ecto.Type
+
+    def type, do: {:array, :string}
+    def cast(val) when is_list(val), do: {:ok, val}
+    def cast(_), do: :error
+    def load(val) when is_list(val), do: {:ok, val}
+    def load(_), do: :error
+    def dump(val) when is_list(val), do: {:ok, val}
+    def dump(_), do: :error
+  end
+
   defmodule Post do
     use Ecto.Schema
 
     schema "posts" do
       field :token, :integer, primary_key: true
       field :title, :string, default: ""
+      field :slug, CustomSlug
       field :body
       field :uuid, :binary_id
       field :color, :binary
       field :decimal, :decimal
       field :upvotes, :integer, default: 0
       field :topics, {:array, :string}
+      field :tags, CustomTag
       field :virtual, :string, virtual: true
       field :published_at, :naive_datetime
       field :source, :map
@@ -72,7 +95,7 @@ defmodule Ecto.ChangesetTest do
   end
 
   defp changeset(schema \\ %Post{}, params) do
-    cast(schema, params, ~w(id token title body upvotes decimal color topics virtual)a)
+    cast(schema, params, ~w(id token title slug body upvotes decimal color topics tags virtual)a)
   end
 
   defmodule CustomError do
@@ -1014,13 +1037,24 @@ defmodule Ecto.ChangesetTest do
       changeset(%{"title" => "hello"})
       |> validate_inclusion(:title, ~w(world), message: "yada")
     assert changeset.errors == [title: {"yada", [validation: :inclusion, enum: ~w(world)]}]
+  end
 
+  test "validate_inclusion/3 with decimal" do
     changeset =
       {%{}, %{value: :decimal}}
       |> Ecto.Changeset.cast(%{value: 0}, [:value])
       |> validate_inclusion(:value, Enum.map([0.0, 0.2], &Decimal.from_float/1))
 
     assert changeset.valid?
+  end
+
+  test "validate_inclusion/3 with custom type" do
+    changeset =
+      changeset(%{"slug" => "foo"})
+      |> validate_inclusion(:slug, ~w(foo))
+    assert changeset.valid?
+    assert changeset.errors == []
+    assert validations(changeset) == [slug: {:inclusion, ~w(foo)}]
   end
 
   test "validate_subset/3" do
@@ -1042,12 +1076,25 @@ defmodule Ecto.ChangesetTest do
       changeset(%{"topics" => ["laptop"]})
       |> validate_subset(:topics, ~w(cat dog), message: "yada")
     assert changeset.errors == [topics: {"yada", [validation: :subset, enum: ~w(cat dog)]}]
+  end
 
+  test "validate_subset/3 with decimal" do
     changeset =
       {%{}, %{value: {:array, :decimal}}}
       |> Ecto.Changeset.cast(%{value: [0, 0.2]}, [:value])
       |> validate_subset(:value, Enum.map([0.0, 0.2], &Decimal.from_float/1))
+
     assert changeset.valid?
+  end
+
+  test "validate_subset/3 with custom type" do
+    changeset =
+      changeset(%{"tags" => ["cute", "animals"]})
+      |> validate_subset(:tags, ~w(cute animals))
+
+    assert changeset.valid?
+    assert changeset.errors == []
+    assert validations(changeset) == [tags: {:subset, ~w(cute animals)}]
   end
 
   test "validate_exclusion/3" do
@@ -1069,13 +1116,24 @@ defmodule Ecto.ChangesetTest do
       changeset(%{"title" => "world"})
       |> validate_exclusion(:title, ~w(world), message: "yada")
     assert changeset.errors == [title: {"yada", [validation: :exclusion, enum: ~w(world)]}]
+  end
 
+  test "validate_exclusion/3 with decimal" do
     decimals = Enum.map([0.0, 0.2], &Decimal.from_float/1)
     changeset =
       {%{}, %{value: :decimal}}
       |> Ecto.Changeset.cast(%{value: 0}, [:value])
       |> validate_exclusion(:value, decimals)
     assert changeset.errors ==  [value: {"is reserved", [validation: :exclusion, enum: decimals]}]
+  end
+
+  test "validate_exclusion/3 with custom type" do
+    changeset =
+      changeset(%{"slug" => "sun"})
+      |> validate_exclusion(:slug, ~w(moon))
+    assert changeset.valid?
+    assert changeset.errors == []
+    assert validations(changeset) == [slug: {:exclusion, ~w(moon)}]
   end
 
   test "validate_length/3 with string" do
