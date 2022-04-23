@@ -1,19 +1,7 @@
 Code.require_file "../support/eval_helpers.exs", __DIR__
 
-defmodule Ecto.QueryTest do
-  use ExUnit.Case, async: true
-
-  import Support.EvalHelpers
-  import Ecto.Query
-  alias Ecto.Query
-
-  defmodule Schema do
-    use Ecto.Schema
-    schema "schema" do
-    end
-  end
-
-  defmacrop macro_equal(column, value) do
+defmodule Ecto.QueryTest.Macros do
+  defmacro macro_equal(column, value) do
     quote do
       unquote(column) == unquote(value)
     end
@@ -26,9 +14,30 @@ defmodule Ecto.QueryTest do
     end
   end
 
+  defmacro macrotest(x), do: quote(do: is_nil(unquote(x)) or unquote(x) == "A")
+  defmacro deeper_macrotest(x), do: quote(do: macrotest(unquote(x)) or unquote(x) == "B")
+end
+
+defmodule Ecto.QueryTest do
+  use ExUnit.Case, async: true
+
+  import Support.EvalHelpers
+  import Ecto.Query
+  import Ecto.QueryTest.Macros
+  require Ecto.QueryTest.Macros, as: Macros
+  alias Ecto.Query
+
+  defmodule Schema do
+    use Ecto.Schema
+    schema "schema" do
+    end
+  end
+
   describe "query building" do
     test "allows macros" do
       test_data = "test"
+      query = from(p in "posts") |> where([q], Macros.macro_equal(q.title, ^test_data))
+      assert "&0.title() == ^0" == Macro.to_string(hd(query.wheres).expr)
       query = from(p in "posts") |> where([q], macro_equal(q.title, ^test_data))
       assert "&0.title() == ^0" == Macro.to_string(hd(query.wheres).expr)
     end
@@ -38,10 +47,10 @@ defmodule Ecto.QueryTest do
       from(p in "posts", select: [macro_map(^key)])
     end
 
-    defmacrop macrotest(x), do: quote(do: is_nil(unquote(x)) or unquote(x) == "A")
-    defmacrop deeper_macrotest(x), do: quote(do: macrotest(unquote(x)) or unquote(x) == "B")
     test "allows macro in where" do
+      _ = from(p in "posts", where: p.title == "C" or Macros.macrotest(p.title))
       _ = from(p in "posts", where: p.title == "C" or macrotest(p.title))
+      _ = from(p in "posts", where: p.title == "C" or Macros.deeper_macrotest(p.title))
       _ = from(p in "posts", where: p.title == "C" or deeper_macrotest(p.title))
     end
 
@@ -58,6 +67,10 @@ defmodule Ecto.QueryTest do
         id = nil
         from p in "posts", where: [id: ^id]
       end
+    end
+
+    test "allows arbitrary parentheses in where" do
+      _ = from(p in "posts", where: (not is_nil(p.title)))
     end
   end
 
@@ -331,8 +344,8 @@ defmodule Ecto.QueryTest do
     end
 
     test "assign to source fails when non-atom name passed" do
-      message = ~r"`as` must be a compile time atom, got: `\"post\"`"
-      assert_raise Ecto.Query.CompileError, message, fn ->
+      message = ~r/`as` must be a compile time atom or an interpolated value using \^, got: "post"/
+      assert_raise Ecto.Query.CompileError, message, fn -> 
         quote_and_eval(from(p in "posts", as: "post"))
       end
     end
@@ -476,7 +489,7 @@ defmodule Ecto.QueryTest do
       assert hd(query.joins).prefix == "world"
     end
 
-    test "are supported and overriden from schemas" do
+    test "are supported and overridden from schemas" do
       query = from(Post)
       assert query.from.prefix == "another"
 
@@ -549,7 +562,7 @@ defmodule Ecto.QueryTest do
 
   describe "keyword queries" do
     test "are supported through from/2" do
-      # queries need to be on the same line or == wont work
+      # queries need to be on the same line or == won't work
       assert from(p in "posts", select: 1 < 2) == from(p in "posts", []) |> select([p], 1 < 2)
       assert from(p in "posts", where: 1 < 2)  == from(p in "posts", []) |> where([p], 1 < 2)
 
@@ -820,74 +833,74 @@ defmodule Ecto.QueryTest do
     test "can be used to merge two dynamics" do
       left = dynamic([posts], posts.is_public == true)
       right = dynamic([posts], posts.is_draft == false)
-      
-      assert inspect(dynamic(^left and ^right)) == 
+
+      assert inspect(dynamic(^left and ^right)) ==
         inspect(dynamic([posts], posts.is_public == true and posts.is_draft == false))
-      
-      assert inspect(dynamic(^left or ^right)) == 
+
+      assert inspect(dynamic(^left or ^right)) ==
         inspect(dynamic([posts], posts.is_public == true or posts.is_draft == false))
     end
-      
+
     test "can be used to merge dynamics with subquery" do
-      subquery = 
-        from c in "comments", 
-          where: c.commented_by == ^Ecto.UUID.generate(), 
+      subquery =
+        from c in "comments",
+          where: c.commented_by == ^Ecto.UUID.generate(),
           select: c.post_id
-      
+
       dynamic = dynamic([posts], posts.is_public == true)
       dynamic_with_subquery = dynamic([posts], posts.id in subquery(subquery))
-      
-      assert inspect(dynamic(^dynamic and ^dynamic_with_subquery)) == 
+
+      assert inspect(dynamic(^dynamic and ^dynamic_with_subquery)) ==
         inspect(dynamic([posts], posts.is_public == true and posts.id in subquery(subquery)))
-      
-      assert inspect(dynamic(^dynamic_with_subquery or ^dynamic)) == 
+
+      assert inspect(dynamic(^dynamic_with_subquery or ^dynamic)) ==
         inspect(dynamic([posts], posts.id in subquery(subquery) or posts.is_public == true))
     end
-    
+
     test "can be used to merge two dynamics with named bindings" do
       left = dynamic([post: post], post.is_public == true)
       right = dynamic([post: post], post.is_draft == false)
-      
+
       query = from p in "post", as: :post
-      
+
       assert inspect(where(query, ^dynamic(^left and ^right))) ==
         inspect(where(query, [post: post], post.is_public == true and post.is_draft == false))
     end
-    
+
     test "can be used to merge two dynamics with subquery that reuse named binding" do
-      subquery = 
-        from c in "comments", 
-          where: c.commented_by == ^Ecto.UUID.generate(), 
+      subquery =
+        from c in "comments",
+          where: c.commented_by == ^Ecto.UUID.generate(),
           select: c.post_id
 
       dynamic = dynamic([post: post], post.is_public == ^true)
       dynamic_with_subquery = dynamic([post: post], post.id in subquery(subquery))
       dynamic_not_in = dynamic([post: post], post.foo not in ^[1, 2, 3])
-      
+
       query = from p in "post", as: :post
-      
+
       assert inspect(where(query, ^dynamic(^dynamic and ^dynamic_with_subquery))) ==
         inspect(where(query, [post: post], post.is_public == ^true and post.id in subquery(subquery)))
-      
+
       assert inspect(where(query, ^dynamic(^dynamic_with_subquery or ^dynamic))) ==
         inspect(where(query, [post: post], post.id in subquery(subquery) or post.is_public == ^true))
-      
+
       assert inspect(where(query, ^dynamic(^dynamic_with_subquery and ^dynamic and ^dynamic_not_in))) ==
         inspect(where(query, [post: post], post.id in subquery(subquery) and post.is_public == ^true and post.foo not in ^[1, 2, 3]))
     end
-    
+
     test "merges with precedence" do
       left = dynamic([posts], posts.is_public == true)
       right = dynamic([posts], posts.is_draft == false)
-      
-      assert inspect(dynamic(^left or ^left and ^right)) == 
+
+      assert inspect(dynamic(^left or ^left and ^right)) ==
         inspect(dynamic([posts], posts.is_public == true or (posts.is_public == true and posts.is_draft == false)))
-      
-      assert inspect(dynamic(^left and ^left or ^right)) == 
+
+      assert inspect(dynamic(^left and ^left or ^right)) ==
         inspect(dynamic([posts], (posts.is_public == true and posts.is_public == true) or posts.is_draft == false))
     end
   end
-  
+
   describe "fragment/1" do
     test "raises at runtime when interpolation is not a keyword list" do
       assert_raise ArgumentError, ~r/fragment\(...\) does not allow strings to be interpolated/s, fn ->

@@ -1,7 +1,10 @@
+Code.require_file "../../../support/eval_helpers.exs", __DIR__
+
 defmodule Ecto.Query.Builder.JoinTest do
   use ExUnit.Case, async: true
 
   import Ecto.Query.Builder.Join
+  import Support.EvalHelpers
   doctest Ecto.Query.Builder.Join
 
   import Ecto.Query
@@ -76,6 +79,15 @@ defmodule Ecto.Query.Builder.JoinTest do
     join("posts", :left, [p], c in subquery(subquery), on: true)
     join("posts", :left, [p], c in subquery(subquery, prefix: "sample"), on: true)
   end
+  
+  test "`as` accepts literal atoms and interpolated values, but not other literals" do
+    name = :comments
+    join("posts", :left, [p], c in assoc(p, :comments), as: :comments)
+    join("posts", :left, [p], c in assoc(p, :comments), as: ^name)
+    assert_raise Ecto.Query.CompileError, "`as` must be a compile time atom or an interpolated value using ^, got: 10", fn -> 
+      quote_and_eval(join("posts", :left, [p], c in assoc(p, :comments), as: 10))
+    end
+  end
 
   test "raises on invalid qualifier" do
     assert_raise ArgumentError,
@@ -133,20 +145,6 @@ defmodule Ecto.Query.Builder.JoinTest do
     assert_raise ArgumentError, ~r/invalid binding passed/, fn ->
       escape(quote do
         join("posts", :inner, [o, p] in subquery(some_subquery), on: o.id == p.org_id)
-      end, [], __ENV__)
-    end
-  end
-
-  test "raises on non-atom as" do
-    assert_raise Ecto.Query.CompileError, ~r/`as` must be a compile time atom/, fn ->
-      escape(quote do
-        join("posts", :left, [p], c in "comments", on: true, as: "string")
-      end, [], __ENV__)
-    end
-
-    assert_raise Ecto.Query.CompileError, ~r/`as` must be a compile time atom/, fn ->
-      escape(quote do
-        join("posts", :left, [p], c in "comments", on: true, as: atom)
       end, [], __ENV__)
     end
   end

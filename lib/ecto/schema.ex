@@ -1,8 +1,7 @@
 defmodule Ecto.Schema do
   @moduledoc ~S"""
-  Defines a schema.
+  An Ecto schema maps external data into Elixir structs.
 
-  An Ecto schema is used to map any data source into an Elixir struct.
   The definition of the schema is possible through two main APIs:
   `schema/2` and `embedded_schema/1`.
 
@@ -405,9 +404,11 @@ defmodule Ecto.Schema do
   * `__schema__(:primary_key)` - Returns a list of primary key fields (empty if there is none);
 
   * `__schema__(:fields)` - Returns a list of all non-virtual field names;
+  * `__schema__(:virtual_fields)` - Returns a list of all virtual field names;
   * `__schema__(:field_source, field)` - Returns the alias of the given field;
 
   * `__schema__(:type, field)` - Returns the type of the given non-virtual field;
+  * `__schema__(:virtual_type, field)` - Returns the type of the given virtual field;
 
   * `__schema__(:associations)` - Returns a list of all association field names;
   * `__schema__(:association, assoc)` - Returns the association reflection of the given assoc;
@@ -473,6 +474,7 @@ defmodule Ecto.Schema do
 
       Module.register_attribute(__MODULE__, :ecto_primary_keys, accumulate: true)
       Module.register_attribute(__MODULE__, :ecto_fields, accumulate: true)
+      Module.register_attribute(__MODULE__, :ecto_virtual_fields, accumulate: true)
       Module.register_attribute(__MODULE__, :ecto_query_fields, accumulate: true)
       Module.register_attribute(__MODULE__, :ecto_field_sources, accumulate: true)
       Module.register_attribute(__MODULE__, :ecto_assocs, accumulate: true)
@@ -541,8 +543,8 @@ defmodule Ecto.Schema do
         @ecto_schema_defined unquote(caller.line)
 
         @after_compile Ecto.Schema
-        Module.register_attribute(__MODULE__, :changeset_fields, accumulate: true)
-        Module.register_attribute(__MODULE__, :struct_fields, accumulate: true)
+        Module.register_attribute(__MODULE__, :ecto_changeset_fields, accumulate: true)
+        Module.register_attribute(__MODULE__, :ecto_struct_fields, accumulate: true)
 
         meta?  = unquote(meta?)
         source = unquote(source)
@@ -567,7 +569,7 @@ defmodule Ecto.Schema do
             schema: __MODULE__
           }
 
-          Module.put_attribute(__MODULE__, :struct_fields, {:__meta__, meta})
+          Module.put_attribute(__MODULE__, :ecto_struct_fields, {:__meta__, meta})
         end
 
         if @primary_key == nil do
@@ -600,21 +602,22 @@ defmodule Ecto.Schema do
         autoupdate = @ecto_autoupdate |> Enum.reverse
         fields = @ecto_fields |> Enum.reverse
         query_fields = @ecto_query_fields |> Enum.reverse
+        virtual_fields = @ecto_virtual_fields |> Enum.reverse
         field_sources = @ecto_field_sources |> Enum.reverse
         assocs = @ecto_assocs |> Enum.reverse
         embeds = @ecto_embeds |> Enum.reverse
         redacted_fields = @ecto_redact_fields
-        loaded = Ecto.Schema.__loaded__(__MODULE__, @struct_fields)
+        loaded = Ecto.Schema.__loaded__(__MODULE__, @ecto_struct_fields)
 
         if redacted_fields != [] and not List.keymember?(@derive, Inspect, 0) and
              @ecto_derive_inspect_for_redacted_fields do
           @derive {Inspect, except: @ecto_redact_fields}
         end
 
-        defstruct @struct_fields
+        defstruct @ecto_struct_fields
 
         def __changeset__ do
-          %{unquote_splicing(Macro.escape(@changeset_fields))}
+          %{unquote_splicing(Macro.escape(@ecto_changeset_fields))}
         end
 
         def __schema__(:prefix), do: unquote(prefix)
@@ -629,6 +632,7 @@ defmodule Ecto.Schema do
         def __schema__(:autoupdate), do: unquote(Macro.escape(autoupdate))
         def __schema__(:loaded), do: unquote(Macro.escape(loaded))
         def __schema__(:redact_fields), do: unquote(redacted_fields)
+        def __schema__(:virtual_fields), do: unquote(Enum.map(virtual_fields, &elem(&1, 0)))
 
         def __schema__(:query) do
           %Ecto.Query{
@@ -639,7 +643,7 @@ defmodule Ecto.Schema do
           }
         end
 
-        for clauses <- Ecto.Schema.__schema__(fields, field_sources, assocs, embeds),
+        for clauses <- Ecto.Schema.__schema__(fields, field_sources, assocs, embeds, virtual_fields),
             {args, body} <- clauses do
           def __schema__(unquote_splicing(args)), do: unquote(body)
         end
@@ -1369,7 +1373,7 @@ defmodule Ecto.Schema do
       |> where([t, ..., p], p.public == t.public)
 
   Another and preferred option is to rewrite to an explicit `join`, which
-  ellide the intermediate bindings as they are resolved only later on:
+  leaves out the intermediate bindings as they are resolved only later on:
 
       # keyword syntax
       from t in Tag,
@@ -1685,7 +1689,7 @@ defmodule Ecto.Schema do
   It is recommended to declare your `embeds_many/3` field with type `:map`
   in your migrations, instead of using `{:array, :map}`. Ecto can work with
   both maps and arrays as the container for embeds (and in most databases
-  map are represented as JSON which allows Ecto to choose what works best).
+  maps are represented as JSON which allows Ecto to choose what works best).
 
   The embedded may or may not have a primary key. Ecto uses the primary keys
   to detect if an embed is being updated or not. If a primary is not present
@@ -1905,7 +1909,7 @@ defmodule Ecto.Schema do
 
     opts = Keyword.put(opts, :type, type)
     check_options!(opts, @field_opts, "field/3")
-    Module.put_attribute(mod, :changeset_fields, {name, type})
+    Module.put_attribute(mod, :ecto_changeset_fields, {name, type})
     validate_default!(type, opts[:default], opts[:skip_default_validation])
     define_field(mod, name, type, opts)
   end
@@ -1919,8 +1923,14 @@ defmodule Ecto.Schema do
       Module.put_attribute(mod, :ecto_redact_fields, name)
     end
 
-    unless virtual? do
+    if virtual? do
+      Module.put_attribute(mod, :ecto_virtual_fields, {name, type})
+    else
       source = opts[:source] || Module.get_attribute(mod, :field_source_mapper).(name)
+
+      if not is_atom(source) do
+        raise ArgumentError, "the :source for field `#{name}` must be an atom, got: #{inspect(source)}"
+      end
 
       if name != source do
         Module.put_attribute(mod, :ecto_field_sources, {name, source})
@@ -1967,7 +1977,7 @@ defmodule Ecto.Schema do
     else
       check_options!(opts, @valid_has_options, "has_many/3")
       struct = association(mod, :many, name, Ecto.Association.Has, [queryable: queryable] ++ opts)
-      Module.put_attribute(mod, :changeset_fields, {name, {:assoc, struct}})
+      Module.put_attribute(mod, :ecto_changeset_fields, {name, {:assoc, struct}})
     end
   end
 
@@ -1979,7 +1989,7 @@ defmodule Ecto.Schema do
     else
       check_options!(opts, @valid_has_options, "has_one/3")
       struct = association(mod, :one, name, Ecto.Association.Has, [queryable: queryable] ++ opts)
-      Module.put_attribute(mod, :changeset_fields, {name, {:assoc, struct}})
+      Module.put_attribute(mod, :ecto_changeset_fields, {name, {:assoc, struct}})
     end
   end
 
@@ -2005,7 +2015,7 @@ defmodule Ecto.Schema do
 
     struct =
       association(mod, :one, name, Ecto.Association.BelongsTo, [queryable: queryable] ++ opts)
-    Module.put_attribute(mod, :changeset_fields, {name, {:assoc, struct}})
+    Module.put_attribute(mod, :ecto_changeset_fields, {name, {:assoc, struct}})
   end
 
   @valid_many_to_many_options [:join_through, :join_defaults, :join_keys, :on_delete, :defaults, :on_replace, :unique, :where, :join_where, :preload_order]
@@ -2016,7 +2026,7 @@ defmodule Ecto.Schema do
 
     struct =
       association(mod, :many, name, Ecto.Association.ManyToMany, [queryable: queryable] ++ opts)
-    Module.put_attribute(mod, :changeset_fields, {name, {:assoc, struct}})
+    Module.put_attribute(mod, :ecto_changeset_fields, {name, {:assoc, struct}})
   end
 
   @valid_embeds_one_options [:strategy, :on_replace, :source]
@@ -2082,7 +2092,7 @@ defmodule Ecto.Schema do
   end
 
   @doc false
-  def __schema__(fields, field_sources, assocs, embeds) do
+  def __schema__(fields, field_sources, assocs, embeds, virtual_fields) do
     load =
       for {name, type} <- fields do
         if alias = field_sources[name] do
@@ -2105,6 +2115,11 @@ defmodule Ecto.Schema do
     types_quoted =
       for {name, type} <- fields do
         {[:type, name], Macro.escape(type)}
+      end
+
+    virtual_types_quoted =
+      for {name, type} <- virtual_fields do
+        {[:virtual_type, name], Macro.escape(type)}
       end
 
     assoc_quoted =
@@ -2131,6 +2146,7 @@ defmodule Ecto.Schema do
     catch_all = [
       {[:field_source, quote(do: _)], nil},
       {[:type, quote(do: _)], nil},
+      {[:virtual_type, quote(do: _)], nil},
       {[:association, quote(do: _)], nil},
       {[:embed, quote(do: _)], nil}
     ]
@@ -2139,6 +2155,7 @@ defmodule Ecto.Schema do
       single_arg,
       field_sources_quoted,
       types_quoted,
+      virtual_types_quoted,
       assoc_quoted,
       embed_quoted,
       catch_all
@@ -2151,19 +2168,19 @@ defmodule Ecto.Schema do
     opts   = [cardinality: cardinality, related: schema, owner: mod, field: name] ++ opts
     struct = Ecto.Embedded.init(opts)
 
-    Module.put_attribute(mod, :changeset_fields, {name, {:embed, struct}})
+    Module.put_attribute(mod, :ecto_changeset_fields, {name, {:embed, struct}})
     Module.put_attribute(mod, :ecto_embeds, {name, struct})
     define_field(mod, name, {:parameterized, Ecto.Embedded, struct}, opts)
   end
 
   defp put_struct_field(mod, name, assoc) do
-    fields = Module.get_attribute(mod, :struct_fields)
+    fields = Module.get_attribute(mod, :ecto_struct_fields)
 
     if List.keyfind(fields, name, 0) do
       raise ArgumentError, "field/association #{inspect name} already exists on schema, you must either remove the duplication or choose a different name"
     end
 
-    Module.put_attribute(mod, :struct_fields, {name, assoc})
+    Module.put_attribute(mod, :ecto_struct_fields, {name, assoc})
   end
 
   defp validate_default!(_type, _value, true), do: :ok

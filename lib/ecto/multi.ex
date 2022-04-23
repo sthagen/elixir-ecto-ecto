@@ -267,8 +267,8 @@ defmodule Ecto.Multi do
       Ecto.Multi.new()
       |> Ecto.Multi.insert(:post, %Post{title: "first"})
       |> Ecto.Multi.insert(:comment, fn %{post: post} ->
-           Ecto.build_assoc(post, :comments)
-         end)
+        Ecto.build_assoc(post, :comments)
+      end)
       |> MyApp.Repo.transaction()
 
   """
@@ -303,8 +303,8 @@ defmodule Ecto.Multi do
       Ecto.Multi.new()
       |> Ecto.Multi.insert(:post, %Post{title: "first"})
       |> Ecto.Multi.update(:fun, fn %{post: post} ->
-           Ecto.Changeset.change(post, title: "New title")
-         end)
+        Ecto.Changeset.change(post, title: "New title")
+      end)
       |> MyApp.Repo.transaction()
 
   """
@@ -333,11 +333,11 @@ defmodule Ecto.Multi do
 
       Ecto.Multi.new()
       |> Ecto.Multi.run(:post, fn repo, _changes ->
-           {:ok, repo.get(Post, 1) || %Post{}}
-         end)
+        {:ok, repo.get(Post, 1) || %Post{}}
+      end)
       |> Ecto.Multi.insert_or_update(:update, fn %{post: post} ->
-           Ecto.Changeset.change(post, title: "New title")
-         end)
+        Ecto.Changeset.change(post, title: "New title")
+      end)
       |> MyApp.Repo.transaction()
 
   """
@@ -370,15 +370,15 @@ defmodule Ecto.Multi do
 
       Ecto.Multi.new()
       |> Ecto.Multi.run(:post, fn repo, _changes ->
-           case repo.get(Post, 1) do
-             nil -> {:error, :not_found}
-             post -> {:ok, post}
-           end
-         end)
+        case repo.get(Post, 1) do
+          nil -> {:error, :not_found}
+          post -> {:ok, post}
+        end
+      end)
       |> Ecto.Multi.delete(:delete, fn %{post: post} ->
-           # Others validations
-           post
-         end)
+        # Others validations
+        post
+      end)
       |> MyApp.Repo.transaction()
 
   """
@@ -490,15 +490,22 @@ defmodule Ecto.Multi do
       |> MyApp.Repo.transaction()
 
   """
-  @spec insert_all(t, name, schema_or_source, [map | Keyword.t] | fun([map | Keyword.t]), Keyword.t) :: t
-  def insert_all(multi, name, schema_or_source, entries_or_fun, opts \\ [])
+  @spec insert_all(
+          t,
+          name,
+          schema_or_source,
+          entries_or_query_or_fun :: [map | Keyword.t()] | fun([map | Keyword.t()]) | Ecto.Query.t(),
+          Keyword.t()
+        ) :: t
+  def insert_all(multi, name, schema_or_source, entries_or_query_or_fun, opts \\ [])
 
-  def insert_all(multi, name, schema_or_source, entries_fun, opts) when is_function(entries_fun, 1) and is_list(opts) do
+  def insert_all(multi, name, schema_or_source, entries_fun, opts)
+      when is_function(entries_fun, 1) and is_list(opts) do
     run(multi, name, operation_fun({:insert_all, schema_or_source, entries_fun}, opts))
   end
 
-  def insert_all(multi, name, schema_or_source, entries, opts) when is_list(opts) do
-    add_operation(multi, name, {:insert_all, schema_or_source, entries, opts})
+  def insert_all(multi, name, schema_or_source, entries_or_query, opts) when is_list(opts) do
+    add_operation(multi, name, {:insert_all, schema_or_source, entries_or_query, opts})
   end
 
   @doc """

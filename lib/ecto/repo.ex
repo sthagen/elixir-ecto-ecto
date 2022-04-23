@@ -56,6 +56,9 @@ defmodule Ecto.Repo do
       use the `:repo` property in the event metadata for distinguishing
       between repos.
 
+    * `:stacktrace`- when true, publishes the stacktrace in telemetry events
+      and allows more advanced logging.
+
   ## URLs
 
   Repositories by default support URLs. For example, the configuration
@@ -233,16 +236,16 @@ defmodule Ecto.Repo do
       end
 
       def checkout(fun, opts \\ []) when is_function(fun) do
-        {adapter, meta} = Ecto.Repo.Registry.lookup(get_dynamic_repo())
+        %{adapter: adapter} = meta = Ecto.Repo.Registry.lookup(get_dynamic_repo())
         adapter.checkout(meta, opts, fun)
       end
 
       def checked_out? do
-        {adapter, meta} = Ecto.Repo.Registry.lookup(get_dynamic_repo())
+        %{adapter: adapter} = meta = Ecto.Repo.Registry.lookup(get_dynamic_repo())
         adapter.checked_out?(meta)
       end
 
-      @compile {:inline, get_dynamic_repo: 0, with_default_options: 2}
+      @compile {:inline, get_dynamic_repo: 0, prepare_opts: 2}
 
       def get_dynamic_repo() do
         Process.get({__MODULE__, :dynamic_repo}, @default_dynamic_repo)
@@ -255,15 +258,18 @@ defmodule Ecto.Repo do
       def default_options(_operation), do: []
       defoverridable default_options: 1
 
-      defp with_default_options(operation_name, opts) do
-        Keyword.merge(default_options(operation_name), opts)
+      defp prepare_opts(operation_name, opts) do
+        operation_name
+        |> default_options()
+        |> Keyword.merge(opts)
       end
 
       ## Transactions
 
       if Ecto.Adapter.Transaction in behaviours do
         def transaction(fun_or_multi, opts \\ []) do
-          Ecto.Repo.Transaction.transaction(__MODULE__, get_dynamic_repo(), fun_or_multi, with_default_options(:transaction, opts))
+          repo = get_dynamic_repo()
+          Ecto.Repo.Transaction.transaction(__MODULE__, repo, fun_or_multi, Ecto.Repo.Supervisor.tuplet(repo, prepare_opts(:transaction, opts)))
         end
 
         def in_transaction? do
@@ -280,39 +286,48 @@ defmodule Ecto.Repo do
 
       if Ecto.Adapter.Schema in behaviours and not @read_only do
         def insert(struct, opts \\ []) do
-          Ecto.Repo.Schema.insert(__MODULE__, get_dynamic_repo(), struct, with_default_options(:insert, opts))
+          repo = get_dynamic_repo()
+          Ecto.Repo.Schema.insert(__MODULE__, repo, struct, Ecto.Repo.Supervisor.tuplet(repo, prepare_opts(:insert, opts)))
         end
 
         def update(struct, opts \\ []) do
-          Ecto.Repo.Schema.update(__MODULE__, get_dynamic_repo(), struct, with_default_options(:update, opts))
+          repo = get_dynamic_repo()
+          Ecto.Repo.Schema.update(__MODULE__, get_dynamic_repo(), struct, Ecto.Repo.Supervisor.tuplet(repo, prepare_opts(:update, opts)))
         end
 
         def insert_or_update(changeset, opts \\ []) do
-          Ecto.Repo.Schema.insert_or_update(__MODULE__, get_dynamic_repo(), changeset, with_default_options(:insert_or_update, opts))
+          repo = get_dynamic_repo()
+          Ecto.Repo.Schema.insert_or_update(__MODULE__, get_dynamic_repo(), changeset, Ecto.Repo.Supervisor.tuplet(repo, prepare_opts(:insert_or_update, opts)))
         end
 
         def delete(struct, opts \\ []) do
-          Ecto.Repo.Schema.delete(__MODULE__, get_dynamic_repo(), struct, with_default_options(:delete, opts))
+          repo = get_dynamic_repo()
+          Ecto.Repo.Schema.delete(__MODULE__, get_dynamic_repo(), struct, Ecto.Repo.Supervisor.tuplet(repo, prepare_opts(:delete, opts)))
         end
 
         def insert!(struct, opts \\ []) do
-          Ecto.Repo.Schema.insert!(__MODULE__, get_dynamic_repo(), struct, with_default_options(:insert, opts))
+          repo = get_dynamic_repo()
+          Ecto.Repo.Schema.insert!(__MODULE__, get_dynamic_repo(), struct, Ecto.Repo.Supervisor.tuplet(repo, prepare_opts(:insert, opts)))
         end
 
         def update!(struct, opts \\ []) do
-          Ecto.Repo.Schema.update!(__MODULE__, get_dynamic_repo(), struct, with_default_options(:update, opts))
+          repo = get_dynamic_repo()
+          Ecto.Repo.Schema.update!(__MODULE__, get_dynamic_repo(), struct, Ecto.Repo.Supervisor.tuplet(repo, prepare_opts(:update, opts)))
         end
 
         def insert_or_update!(changeset, opts \\ []) do
-          Ecto.Repo.Schema.insert_or_update!(__MODULE__, get_dynamic_repo(), changeset, with_default_options(:insert_or_update, opts))
+          repo = get_dynamic_repo()
+          Ecto.Repo.Schema.insert_or_update!(__MODULE__, get_dynamic_repo(), changeset, Ecto.Repo.Supervisor.tuplet(repo, prepare_opts(:insert_or_update, opts)))
         end
 
         def delete!(struct, opts \\ []) do
-          Ecto.Repo.Schema.delete!(__MODULE__, get_dynamic_repo(), struct, with_default_options(:delete, opts))
+          repo = get_dynamic_repo()
+          Ecto.Repo.Schema.delete!(__MODULE__, get_dynamic_repo(), struct, Ecto.Repo.Supervisor.tuplet(repo, prepare_opts(:delete, opts)))
         end
 
         def insert_all(schema_or_source, entries, opts \\ []) do
-          Ecto.Repo.Schema.insert_all(__MODULE__, get_dynamic_repo(), schema_or_source, entries, with_default_options(:insert_all, opts))
+          repo = get_dynamic_repo()
+          Ecto.Repo.Schema.insert_all(__MODULE__, get_dynamic_repo(), schema_or_source, entries, Ecto.Repo.Supervisor.tuplet(repo, prepare_opts(:insert_all, opts)))
         end
       end
 
@@ -321,77 +336,94 @@ defmodule Ecto.Repo do
       if Ecto.Adapter.Queryable in behaviours do
         if not @read_only do
           def update_all(queryable, updates, opts \\ []) do
-            Ecto.Repo.Queryable.update_all(get_dynamic_repo(), queryable, updates, with_default_options(:update_all, opts))
+            repo = get_dynamic_repo()
+            Ecto.Repo.Queryable.update_all(get_dynamic_repo(), queryable, updates, Ecto.Repo.Supervisor.tuplet(repo, prepare_opts(:update_all, opts)))
           end
 
           def delete_all(queryable, opts \\ []) do
-            Ecto.Repo.Queryable.delete_all(get_dynamic_repo(), queryable, with_default_options(:delete_all, opts))
+            repo = get_dynamic_repo()
+            Ecto.Repo.Queryable.delete_all(get_dynamic_repo(), queryable, Ecto.Repo.Supervisor.tuplet(repo, prepare_opts(:delete_all, opts)))
           end
         end
 
         def all(queryable, opts \\ []) do
-          Ecto.Repo.Queryable.all(get_dynamic_repo(), queryable, with_default_options(:all, opts))
+          repo = get_dynamic_repo()
+          Ecto.Repo.Queryable.all(get_dynamic_repo(), queryable, Ecto.Repo.Supervisor.tuplet(repo, prepare_opts(:all, opts)))
         end
 
         def stream(queryable, opts \\ []) do
-          Ecto.Repo.Queryable.stream(get_dynamic_repo(), queryable, with_default_options(:stream, opts))
+          repo = get_dynamic_repo()
+          Ecto.Repo.Queryable.stream(get_dynamic_repo(), queryable, Ecto.Repo.Supervisor.tuplet(repo, prepare_opts(:stream, opts)))
         end
 
         def get(queryable, id, opts \\ []) do
-          Ecto.Repo.Queryable.get(get_dynamic_repo(), queryable, id, with_default_options(:all, opts))
+          repo = get_dynamic_repo()
+          Ecto.Repo.Queryable.get(get_dynamic_repo(), queryable, id, Ecto.Repo.Supervisor.tuplet(repo, prepare_opts(:all, opts)))
         end
 
         def get!(queryable, id, opts \\ []) do
-          Ecto.Repo.Queryable.get!(get_dynamic_repo(), queryable, id, with_default_options(:all, opts))
+          repo = get_dynamic_repo()
+          Ecto.Repo.Queryable.get!(get_dynamic_repo(), queryable, id, Ecto.Repo.Supervisor.tuplet(repo, prepare_opts(:all, opts)))
         end
 
         def get_by(queryable, clauses, opts \\ []) do
-          Ecto.Repo.Queryable.get_by(get_dynamic_repo(), queryable, clauses, with_default_options(:all, opts))
+          repo = get_dynamic_repo()
+          Ecto.Repo.Queryable.get_by(get_dynamic_repo(), queryable, clauses, Ecto.Repo.Supervisor.tuplet(repo, prepare_opts(:all, opts)))
         end
 
         def get_by!(queryable, clauses, opts \\ []) do
-          Ecto.Repo.Queryable.get_by!(get_dynamic_repo(), queryable, clauses, with_default_options(:all, opts))
+          repo = get_dynamic_repo()
+          Ecto.Repo.Queryable.get_by!(get_dynamic_repo(), queryable, clauses, Ecto.Repo.Supervisor.tuplet(repo, prepare_opts(:all, opts)))
         end
 
         def reload(queryable, opts \\ []) do
-          Ecto.Repo.Queryable.reload(get_dynamic_repo(), queryable, opts)
+          repo = get_dynamic_repo()
+          Ecto.Repo.Queryable.reload(get_dynamic_repo(), queryable, Ecto.Repo.Supervisor.tuplet(repo, prepare_opts(:reload, opts)))
         end
 
         def reload!(queryable, opts \\ []) do
-          Ecto.Repo.Queryable.reload!(get_dynamic_repo(), queryable, opts)
+          repo = get_dynamic_repo()
+          Ecto.Repo.Queryable.reload!(get_dynamic_repo(), queryable, Ecto.Repo.Supervisor.tuplet(repo, prepare_opts(:reload, opts)))
         end
 
         def one(queryable, opts \\ []) do
-          Ecto.Repo.Queryable.one(get_dynamic_repo(), queryable, with_default_options(:all, opts))
+          repo = get_dynamic_repo()
+          Ecto.Repo.Queryable.one(get_dynamic_repo(), queryable, Ecto.Repo.Supervisor.tuplet(repo, prepare_opts(:all, opts)))
         end
 
         def one!(queryable, opts \\ []) do
-          Ecto.Repo.Queryable.one!(get_dynamic_repo(), queryable, with_default_options(:all, opts))
+          repo = get_dynamic_repo()
+          Ecto.Repo.Queryable.one!(get_dynamic_repo(), queryable, Ecto.Repo.Supervisor.tuplet(repo, prepare_opts(:all, opts)))
         end
 
         def aggregate(queryable, aggregate, opts \\ [])
 
         def aggregate(queryable, aggregate, opts)
             when aggregate in [:count] and is_list(opts) do
-          Ecto.Repo.Queryable.aggregate(get_dynamic_repo(), queryable, aggregate, with_default_options(:all, opts))
+          repo = get_dynamic_repo()
+          Ecto.Repo.Queryable.aggregate(get_dynamic_repo(), queryable, aggregate, Ecto.Repo.Supervisor.tuplet(repo, prepare_opts(:all, opts)))
         end
 
         def aggregate(queryable, aggregate, field)
             when aggregate in @aggregates and is_atom(field) do
-          Ecto.Repo.Queryable.aggregate(get_dynamic_repo(), queryable, aggregate, field, with_default_options(:all, []))
+          repo = get_dynamic_repo()
+          Ecto.Repo.Queryable.aggregate(get_dynamic_repo(), queryable, aggregate, field, Ecto.Repo.Supervisor.tuplet(repo, prepare_opts(:all, [])))
         end
 
         def aggregate(queryable, aggregate, field, opts)
             when aggregate in @aggregates and is_atom(field) and is_list(opts) do
-          Ecto.Repo.Queryable.aggregate(get_dynamic_repo(), queryable, aggregate, field, with_default_options(:all, opts))
+          repo = get_dynamic_repo()
+          Ecto.Repo.Queryable.aggregate(get_dynamic_repo(), queryable, aggregate, field, Ecto.Repo.Supervisor.tuplet(repo, prepare_opts(:all, opts)))
         end
 
         def exists?(queryable, opts \\ []) do
-          Ecto.Repo.Queryable.exists?(get_dynamic_repo(), queryable, with_default_options(:all, opts))
+          repo = get_dynamic_repo()
+          Ecto.Repo.Queryable.exists?(get_dynamic_repo(), queryable, Ecto.Repo.Supervisor.tuplet(repo, prepare_opts(:all, opts)))
         end
 
         def preload(struct_or_structs_or_nil, preloads, opts \\ []) do
-          Ecto.Repo.Preloader.preload(struct_or_structs_or_nil, get_dynamic_repo(), preloads, with_default_options(:preload, opts))
+          repo = get_dynamic_repo()
+          Ecto.Repo.Preloader.preload(struct_or_structs_or_nil, get_dynamic_repo(), preloads, Ecto.Repo.Supervisor.tuplet(repo, prepare_opts(:preload, opts)))
         end
 
         def prepare_query(operation, query, opts), do: {query, opts}
@@ -701,7 +733,6 @@ defmodule Ecto.Repo do
       in the schema. For more information see the "Query Prefix" section of the
       `Ecto.Query` documentation.
 
-
   See the ["Shared options"](#module-shared-options) section at the module
   documentation for more options.
 
@@ -928,8 +959,8 @@ defmodule Ecto.Repo do
       only be performed when we have more than one preload and the
       repository is not in a transaction. Defaults to `true`.
     * `:prefix` - the prefix to fetch preloads from. By default, queries
-      will use the same prefix as the one in the given collection. This
-      option allows the prefix to be changed.
+      will use the same prefix as the first struct in the given collection.
+      This option allows the prefix to be changed.
 
   See the ["Shared options"](#module-shared-options) section at the module
   documentation for more options.
@@ -944,6 +975,9 @@ defmodule Ecto.Repo do
 
       # Use a keyword list to preload nested associations as well
       posts = Repo.preload posts, [comments: [:replies, :likes], authors: []]
+
+      # You can mix atoms and keywords, but the atoms must come first
+      posts = Repo.preload posts, [:authors, comments: [:likes, replies: [:reactions]]]
 
       # Use a keyword list to customize how associations are queried
       posts = Repo.preload posts, [comments: from(c in Comment, order_by: c.published_at)]
@@ -1129,7 +1163,7 @@ defmodule Ecto.Repo do
               queryable :: Ecto.Queryable.t(),
               updates :: Keyword.t(),
               opts :: Keyword.t()
-            ) :: {integer, nil | [term]}
+            ) :: {non_neg_integer, nil | [term]}
 
   @doc """
   Deletes all entries matching the given query.
@@ -1156,7 +1190,7 @@ defmodule Ecto.Repo do
   """
   @doc group: "Query API"
   @callback delete_all(queryable :: Ecto.Queryable.t(), opts :: Keyword.t()) ::
-              {integer, nil | [term]}
+              {non_neg_integer, nil | [term]}
 
   ## Ecto.Adapter.Schema
 
@@ -1220,7 +1254,8 @@ defmodule Ecto.Repo do
       It may also be `{:unsafe_fragment, binary_fragment}` to pass any
       expression to the database without any sanitization, this is useful
       for partial index or index with expressions, such as
-      `ON CONFLICT (coalesce(firstname, ""), coalesce(lastname, ""))`.
+      `{:unsafe_fragment, "(coalesce(firstname, ""), coalesce(lastname, "")) WHERE middlename IS NULL"}` for
+      `ON CONFLICT (coalesce(firstname, ""), coalesce(lastname, "")) WHERE middlename IS NULL` SQL query.
 
     * `:placeholders` - A map with placeholders. This feature is not supported
       by all databases. See the "Placeholders" section for more information.
@@ -1331,9 +1366,9 @@ defmodule Ecto.Repo do
   @doc group: "Schema API"
   @callback insert_all(
               schema_or_source :: binary | {binary, module} | module,
-              entries_or_query :: [map | [{atom, term | Ecto.Query.t}]] | Ecto.Query.t,
+              entries_or_query :: [%{atom => value} | Keyword.t(value)] | Ecto.Query.t,
               opts :: Keyword.t()
-            ) :: {integer, nil | [term]}
+            ) :: {non_neg_integer, nil | [term]} when value: term | Ecto.Query.t()
 
   @doc """
   Inserts a struct defined via `Ecto.Schema` or a changeset.
@@ -1377,7 +1412,8 @@ defmodule Ecto.Repo do
       It may also be `{:unsafe_fragment, binary_fragment}` to pass any
       expression to the database without any sanitization, this is useful
       for partial index or index with expressions, such as
-      `ON CONFLICT (coalesce(firstname, ""), coalesce(lastname, ""))`.
+      `{:unsafe_fragment, "(coalesce(firstname, ""), coalesce(lastname, "")) WHERE middlename IS NULL"}` for
+      `ON CONFLICT (coalesce(firstname, ""), coalesce(lastname, "")) WHERE middlename IS NULL` SQL query.
 
     * `:stale_error_field` - The field where stale errors will be added in
       the returning changeset. This option can be used to avoid raising

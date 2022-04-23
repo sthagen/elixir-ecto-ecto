@@ -465,7 +465,7 @@ defmodule Ecto.Query do
   A dynamic expression can always be interpolated inside another dynamic
   expression and into the constructs described below.
 
-  ## `where`, `having` and a `join`'s `on'
+  ## `where`, `having` and a `join`'s `on`
 
   The `dynamic` macro can be interpolated at the root of a `where`,
   `having` or a `join`'s `on`.
@@ -632,22 +632,22 @@ defmodule Ecto.Query do
 
   We can write it as a join expression:
 
-      set = from(p in Post,
+      subset = from(p in Post,
         where: p.synced == false and
                  (is_nil(p.sync_started_at) or p.sync_started_at < ^min_sync_started_at),
         limit: ^batch_size
       )
 
       Repo.update_all(
-        from(p in Post, join: s in subquery(set), on: s.id == p.id),
+        from(p in Post, join: s in subquery(subset), on: s.id == p.id),
         set: [sync_started_at: NaiveDateTime.utc_now()]
       )
 
   Or as a `where` condition:
 
-      subset = from(p in subset, select: p.id)
+      subset_ids = from(p in subset, select: p.id)
       Repo.update_all(
-        from(p in Post, where: p.id in subquery(subset)),
+        from(p in Post, where: p.id in subquery(subset_ids)),
         set: [sync_started_at: NaiveDateTime.utc_now()]
       )
 
@@ -1482,6 +1482,25 @@ defmodule Ecto.Query do
         fragment("? % ? DESC", c.id, ^modulus),
         desc: c.id,
       ]
+
+  It's also possible to order by an aliased or calculated column:
+
+    from(c in City,
+      select: %{
+        name: c.name,
+        total_population:
+          fragment(
+            "COALESCE(?, ?) + ? AS total_population",
+            c.animal_population,
+            0,
+            c.human_population
+          )
+      },
+      order_by: [
+        # based on `AS total_population` in the previous fragment
+        {:desc, fragment("total_population")}
+      ]
+    )
 
   ## Expressions examples
 

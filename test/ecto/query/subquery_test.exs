@@ -96,6 +96,35 @@ defmodule Ecto.Query.SubqueryTest do
       assert [{:t, _}, {:l, "literal"}] = query.from.source.query.select.fields
     end
 
+    test "invalid values" do
+      message = "atoms, maps, lists, tuples and sources are not allowed as map values in subquery"
+
+      assert_raise Ecto.SubQueryError, ~r/#{message}/, fn ->
+        query = select(Post, [p], %{t: p.title, l: :literal})
+        plan(from(subquery(query), []))
+      end
+
+      assert_raise Ecto.SubQueryError, ~r/#{message}/, fn ->
+        query = select(Post, [p], %{t: p.title, l: []})
+        plan(from(subquery(query), []))
+      end
+
+      assert_raise Ecto.SubQueryError, ~r/#{message}/, fn ->
+        query = select(Post, [p], %{t: p.title, l: %{}})
+        plan(from(subquery(query), []))
+      end
+
+      assert_raise Ecto.SubQueryError, ~r/#{message}/, fn ->
+        query = select(Post, [p], %{t: p.title, l: {1, 2, 3}})
+        plan(from(subquery(query), []))
+      end
+
+      assert_raise Ecto.SubQueryError, ~r/#{message}/, fn ->
+        query = select(Post, [p], %{t: p.title, l: p})
+        plan(from(subquery(query), []))
+      end
+    end
+
     test "with map updates in select can be used with assoc" do
       query =
         Post
@@ -177,7 +206,7 @@ defmodule Ecto.Query.SubqueryTest do
   describe "plan: subqueries select" do
     test "supports implicit select" do
       query = plan(from(subquery(Post), [])) |> elem(0)
-      assert "&0" = Macro.to_string(query.from.source.query.select.expr)
+      assert "%{id: &0.id(), title: &0.title(), text: &0.text()}" = Macro.to_string(query.from.source.query.select.expr)
     end
 
     test "supports field selector" do
@@ -202,28 +231,21 @@ defmodule Ecto.Query.SubqueryTest do
     test "supports structs" do
       query = from p in Post, select: %Post{text: p.text}
       query = plan(from(subquery(query), [])) |> elem(0)
-      assert "%Ecto.Query.SubqueryTest.Post{text: &0.text()}" =
+      assert "%{text: &0.text()}" =
              Macro.to_string(query.from.source.query.select.expr)
     end
 
     test "supports update in maps" do
       query = from p in Post, select: %{p | text: p.title}
       query = plan(from(subquery(query), [])) |> elem(0)
-      assert "%Ecto.Query.SubqueryTest.Post{id: &0.id(), title: &0.title(), " <>
-             "text: &0.title()}" =
+      assert "%{id: &0.id(), title: &0.title(), text: &0.title()}" =
              Macro.to_string(query.from.source.query.select.expr)
-
-      query = from p in Post, select: %{p | unknown: p.title}
-      assert_raise Ecto.SubQueryError, ~r/invalid key `:unknown`/, fn ->
-        plan(from(subquery(query), []))
-      end
     end
 
     test "supports merge" do
       query = from p in Post, select: merge(p, %{text: p.title})
       query = plan(from(subquery(query), [])) |> elem(0)
-      assert "%Ecto.Query.SubqueryTest.Post{id: &0.id(), title: &0.title(), " <>
-             "text: &0.title()}" =
+      assert "%{id: &0.id(), title: &0.title(), text: &0.title()}" =
              Macro.to_string(query.from.source.query.select.expr)
 
       query = from p in Post, select: merge(%{}, %{})

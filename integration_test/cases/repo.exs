@@ -1,5 +1,5 @@
 defmodule Ecto.Integration.RepoTest do
-  use Ecto.Integration.Case, async: Application.get_env(:ecto, :async_integration_tests, true)
+  use Ecto.Integration.Case, async: Application.compile_env(:ecto, :async_integration_tests, true)
 
   alias Ecto.Integration.TestRepo
   import Ecto.Query
@@ -20,7 +20,7 @@ defmodule Ecto.Integration.RepoTest do
 
   test "supports unnamed repos" do
     assert {:ok, pid} = TestRepo.start_link(name: nil)
-    assert Ecto.Repo.Queryable.all(pid, Post, []) == []
+    assert Ecto.Repo.Queryable.all(pid, Post, Ecto.Repo.Supervisor.tuplet(pid, [])) == []
   end
 
   test "all empty" do
@@ -712,8 +712,8 @@ defmodule Ecto.Integration.RepoTest do
 
     assert post1 == TestRepo.reload(post1)
     assert [post1, post2] == TestRepo.reload([post1, post2])
-    assert [post1, post2, nil] == TestRepo.reload([post1, post2, %Post{id: 55}])
-    assert nil == TestRepo.reload(%Post{id: 55})
+    assert [post1, post2, nil] == TestRepo.reload([post1, post2, %Post{id: 0}])
+    assert nil == TestRepo.reload(%Post{id: 0})
 
     # keeps order as received in the params
     assert [post2, post1] == TestRepo.reload([post2, post1])

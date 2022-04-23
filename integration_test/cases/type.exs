@@ -1,9 +1,11 @@
 defmodule Ecto.Integration.TypeTest do
-  use Ecto.Integration.Case, async: Application.get_env(:ecto, :async_integration_tests, true)
+  use Ecto.Integration.Case, async: Application.compile_env(:ecto, :async_integration_tests, true)
 
   alias Ecto.Integration.{Custom, Item, ItemColor, Order, Post, User, Tag, Usec}
   alias Ecto.Integration.TestRepo
   import Ecto.Query
+
+  @parameterized_type Ecto.ParameterizedType.init(Ecto.Enum, values: [:a, :b])
 
   test "primitive types" do
     integer  = 1
@@ -112,7 +114,7 @@ defmodule Ecto.Integration.TypeTest do
   end
 
   test "tagged types" do
-    TestRepo.insert!(%Post{})
+    TestRepo.insert!(%Post{visits: 12})
 
     # Numbers
     assert [1]   = TestRepo.all(from Post, select: type(^"1", :integer))
@@ -127,11 +129,18 @@ defmodule Ecto.Integration.TypeTest do
     uuid = Ecto.UUID.generate()
     assert [^uuid] = TestRepo.all(from Post, select: type(^uuid, Ecto.UUID))
 
+    # Parameterized types
+    assert [:a] = TestRepo.all(from Post, select: type(^"a", ^@parameterized_type))
+
     # Math operations
     assert [4]   = TestRepo.all(from Post, select: type(2 + ^"2", :integer))
     assert [4.0] = TestRepo.all(from Post, select: type(2.0 + ^"2", :float))
     assert [4]   = TestRepo.all(from p in Post, select: type(2 + ^"2", p.visits))
     assert [4.0] = TestRepo.all(from p in Post, select: type(2.0 + ^"2", p.intensity))
+
+    # Comparison expression
+    assert [12] = TestRepo.all(from p in Post, select: type(coalesce(p.visits, 0), :integer))
+    assert [1.0] = TestRepo.all(from p in Post, select: type(coalesce(p.intensity, 1.0), :float))
   end
 
   test "binary id type" do
@@ -285,8 +294,8 @@ defmodule Ecto.Integration.TypeTest do
   @tag :map_type
   @tag :json_extract_path
   test "json_extract_path with primitive values" do
-    order = %Order{meta: %{:id => 123, :time => ~T[09:00:00], "'single quoted'" => "bar", "\"double quoted\"" => "baz"}}
-    TestRepo.insert!(order)
+    order = %Order{meta: %{:id => 123, :time => ~T[09:00:00], "code" => "good", "'single quoted'" => "bar", "\"double quoted\"" => "baz"}}
+    order = TestRepo.insert!(order)
 
     assert TestRepo.one(from o in Order, select: o.meta["id"]) == 123
     assert TestRepo.one(from o in Order, select: o.meta["bad"]) == nil
@@ -298,19 +307,30 @@ defmodule Ecto.Integration.TypeTest do
     assert TestRepo.one(from o in Order, select: o.meta["'single quoted'"]) == "bar"
     assert TestRepo.one(from o in Order, select: o.meta["';"]) == nil
     assert TestRepo.one(from o in Order, select: o.meta["\"double quoted\""]) == "baz"
+
+    # where
+    assert TestRepo.one(from o in Order, where: o.meta["id"] == 123, select: o.id) == order.id
+    assert TestRepo.one(from o in Order, where: o.meta["id"] == 456, select: o.id) == nil
+    assert TestRepo.one(from o in Order, where: o.meta["code"] == "good", select: o.id) == order.id
+    assert TestRepo.one(from o in Order, where: o.meta["code"] == "bad", select: o.id) == nil
   end
 
   @tag :map_type
   @tag :json_extract_path
   test "json_extract_path with arrays and objects" do
     order = %Order{meta: %{tags: [%{name: "red"}, %{name: "green"}]}}
-    TestRepo.insert!(order)
+    order = TestRepo.insert!(order)
 
     assert TestRepo.one(from o in Order, select: o.meta["tags"][0]["name"]) == "red"
     assert TestRepo.one(from o in Order, select: o.meta["tags"][99]["name"]) == nil
 
     index = 1
     assert TestRepo.one(from o in Order, select: o.meta["tags"][^index]["name"]) == "green"
+
+    # where
+    assert TestRepo.one(from o in Order, where: o.meta["tags"][0]["name"] == "red", select: o.id) == order.id
+    assert TestRepo.one(from o in Order, where: o.meta["tags"][0]["name"] == "blue", select: o.id) == nil
+    assert TestRepo.one(from o in Order, where: o.meta["tags"][99]["name"] == "red", select: o.id) == nil
   end
 
   @tag :map_type

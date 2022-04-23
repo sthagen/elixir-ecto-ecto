@@ -848,11 +848,23 @@ defmodule Ecto.Query.PlannerTest do
     assert_raise Ecto.QueryError, ~r/could not find named binding `as\(:posts\)`/, fn ->
       from(Post, where: as(^as).code == ^123) |> normalize()
     end
+  end
 
-    assert_raise Ecto.Query.CompileError, ~r/expected atom in as\/1/, fn ->
-      as = "posts"
+  test "normalize: creating dynamic bindings with as" do
+    as = {:posts}
+
+    query = from(Post, as: ^as, where: as(^as).code == ^123) |> normalize()
+    assert Macro.to_string(hd(query.wheres).expr) == "&0.code() == ^0"
+
+    query = from(Post, as: ^as, where: field(as(^as), :code) == ^123) |> normalize()
+    assert Macro.to_string(hd(query.wheres).expr) == "&0.code() == ^0"
+
+    assert_raise Ecto.QueryError, ~r/could not find named binding `as\(\{:posts\}\)`/, fn ->
       from(Post, where: as(^as).code == ^123) |> normalize()
     end
+
+    query = from(Post, as: ^as, where: as(^as).code == ^123) |> normalize()
+    assert Macro.to_string(hd(query.wheres).expr) == "&0.code() == ^0"
   end
 
   test "normalize: late parent bindings with as" do
@@ -981,11 +993,33 @@ defmodule Ecto.Query.PlannerTest do
       normalize(query)
     end
 
+    exception = assert_raise Ecto.QueryError, fn ->
+      query = from(Comment, []) |> select([c], c.postd)
+      normalize(query)
+    end
+
+    assert exception.message =~ "field `postd` in `select` does not exist in schema"
+    assert exception.message =~ "Did you mean one of:"
+    assert exception.message =~ "* `posted`"
+    assert exception.message =~ "* `post_id`"
+
     message = ~r"field `temp` in `select` is a virtual field in schema Ecto.Query.PlannerTest.Comment"
     assert_raise Ecto.QueryError, message, fn ->
       query = from(Comment, []) |> select([c], c.temp)
       normalize(query)
     end
+
+    message =
+      ~r"field `crazy_post_with_list` in `select` is an association in schema Ecto.Query.PlannerTest.Comment. Did you mean to use `crazy_post_id`"
+    assert_raise Ecto.QueryError, message, fn ->
+      query = from(Comment, []) |> select([c], c.crazy_post_with_list)
+      normalize(query)
+    end
+  end
+
+  test "normalize: allow virtual fields in type/2" do
+    query = from(Comment, []) |> select([c], type(fragment("1"), c.temp))
+    normalize(query)
   end
 
   test "normalize: validate fields in left side of in expressions" do
@@ -1112,7 +1146,7 @@ defmodule Ecto.Query.PlannerTest do
         |> normalize()
       %{queries: [{"cte", query}]} = with_expr
       assert query.sources == {{"comments", Comment, nil}}
-      assert {:&, [], [0]} = query.select.expr
+      assert {:%{}, [], [id: _, text: _] ++ _} = query.select.expr
       assert  [{:id, {{:., _, [{:&, _, [0]}, :id]}, _, []}},
                {:text, {{:., _, [{:&, _, [0]}, :text]}, _, []}},
                _ | _] = query.select.fields

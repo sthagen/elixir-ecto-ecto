@@ -34,7 +34,10 @@ defmodule Ecto.Changeset do
   The difference between them is that most validations can be
   executed without a need to interact with the database and, therefore,
   are always executed before attempting to insert or update the entry
-  in the database. Some validations may happen against the database but
+  in the database. Validations run immediately when a validation function
+  is called on the data that is contained in the changeset at that time.
+
+  Some validations may happen against the database but
   they are inherently unsafe. Those validations start with a `unsafe_`
   prefix, such as `unsafe_validate_unique/3`.
 
@@ -406,14 +409,18 @@ defmodule Ecto.Changeset do
     Enum.reduce(new_changes, {old_changes, errors, valid?}, fn
       {key, value}, {changes, errors, valid?} ->
         put_change(data, changes, errors, valid?, key, value, Map.get(types, key))
+      _, _ ->
+        raise ArgumentError,
+              "invalid changes being applied to changeset. " <>
+                "Expected a keyword list or a map, got: #{inspect(new_changes)}"
     end)
   end
 
   @doc """
-  Applies the given `params` as changes for the given `data` according to
-  the given set of `permitted` keys. Returns a changeset.
+  Applies the given `params` as changes on the `data` according to
+  the set of `permitted` keys. Returns a changeset.
 
-  The given `data` may be either a changeset, a schema struct or a `{data, types}`
+  `data` may be either a changeset, a schema struct or a `{data, types}`
   tuple. The second argument is a map of `params` that are cast according
   to the type information from `data`. `params` is a map with string keys
   or a map with atom keys, containing potentially invalid data. Mixed keys
@@ -565,12 +572,12 @@ defmodule Ecto.Changeset do
     do: {key, Atom.to_string(key)}
 
   defp cast_key(key),
-    do: raise ArgumentError, "cast/3 expects a list of atom keys, got: `#{inspect key}`"
+    do: raise ArgumentError, "cast/3 expects a list of atom keys, got key: `#{inspect key}`"
 
   defp cast_field(key, param_key, type, params, current, empty_values, defaults, valid?) do
     case params do
       %{^param_key => value} ->
-        value = if value in empty_values, do: Map.get(defaults, key), else: value
+        value = filter_empty_values(type, value, empty_values, defaults, key)
         case Ecto.Type.cast(type, value) do
           {:ok, value} ->
             if Ecto.Type.equal?(type, current, value) do
@@ -588,6 +595,13 @@ defmodule Ecto.Changeset do
 
       _ ->
         :missing
+    end
+  end
+
+  defp filter_empty_values(type, value, empty_values, defaults, key) do
+    case Ecto.Type.filter_empty_values(type, value, empty_values) do
+      :empty -> Map.get(defaults, key)
+      {:ok, value} -> value
     end
   end
 
@@ -1153,7 +1167,7 @@ defmodule Ecto.Changeset do
   Updates a change.
 
   The given `function` is invoked with the change value only if there
-  is a change for the given `key`. Note that the value of the change
+  is a change for `key`. Note that the value of the change
   can still be `nil` (unless the field was marked as required on `validate_required/3`).
 
   ## Examples
@@ -1292,16 +1306,34 @@ defmodule Ecto.Changeset do
             ]
           )
 
-    * changesets or structs - when a changeset or struct is given, they
-      are treated as the canonical data and the associated data currently
-      stored in the association is ignored. For instance, the operation
-      `put_assoc(changeset, :comments, [%Comment{id: 1, title: "changed"}])`
-      will send the `Comment` as is to the database, ignoring any comment
-      currently associated, even if a matching ID is found. If the comment
-      is already persisted to the database, then `put_assoc/4` only takes
-      care of guaranteeing that the comments and the parent data are associated.
-      This extremely useful when associating existing data, as we will see
-      in the "Example: Adding tags to a post" section.
+    * changesets - when changesets are given, they are treated as the canonical
+      data and the associated data currently stored in the association is either
+      updated or replaced. For example, if you call
+      `put_assoc(post_changeset, :comments, [list_of_comments_changesets])`,
+      all comments with matching IDs will be updated according to the changesets.
+      New comments or comments not associated to any post will be correctly
+      associated. Currently associated comments that do not have a matching ID
+      in the list of changesets will act according to the `:on_replace` association
+      configuration (you can chose to raise, ignore the operation, update or delete
+      them). If there are changes in any of the changesets, they will be
+      persisted too.
+
+    * structs - when structs are given, they are treated as the canonical data
+      and the associated data currently stored in the association is replaced.
+      For example, if you call
+      `put_assoc(post_changeset, :comments, [list_of_comments_structs])`,
+      all comments with matching IDs will be replaced by the new structs.
+      New comments or comments not associated to any post will be correctly
+      associated. Currently associated comments that do not have a matching ID
+      in the list of changesets will act according to the `:on_replace`
+      association configuration (you can chose to raise, ignore the operation,
+      update or delete them). Different to passing changesets, structs are not
+      change tracked in any fashion. In other words, if you change a comment
+      struct and give it to `put_assoc/4`, the updates in the struct won't be
+      persisted. You must use changesets instead. `put_assoc/4` with structs
+      only takes care of guaranteeing that the comments and the parent data
+      are associated. This is extremely useful when associating existing data,
+      as we will see in the "Example: Adding tags to a post" section.
 
   Once the parent changeset is given to an `Ecto.Repo` function, all entries
   will be inserted/updated/deleted within the same transaction.
@@ -1490,7 +1522,8 @@ defmodule Ecto.Changeset do
   Applies the changeset changes to the changeset data.
 
   This operation will return the underlying data with changes
-  regardless if the changeset is valid or not.
+  regardless if the changeset is valid or not. See `apply_action/2`
+  for a similar function that ensures the changeset is valid.
 
   ## Examples
 
@@ -1543,6 +1576,7 @@ defmodule Ecto.Changeset do
       {:error, %Changeset{changeset | action: action}}
     end
   end
+
   def apply_action(%Changeset{}, action) do
     raise ArgumentError, "expected action to be an atom, got: #{inspect action}"
   end
@@ -1696,8 +1730,8 @@ defmodule Ecto.Changeset do
   """
   @spec validate_change(t, atom, (atom, term -> [{atom, String.t} | {atom, {String.t, Keyword.t}}])) :: t
   def validate_change(%Changeset{} = changeset, field, validator) when is_atom(field) do
-    %{changes: changes, errors: errors} = changeset
-    ensure_field_exists!(changeset, field)
+    %{changes: changes, types: types, errors: errors} = changeset
+    ensure_field_exists!(changeset, types, field)
 
     value = Map.get(changes, field)
     new   = if is_nil(value), do: [], else: validator.(field, value)
@@ -1764,7 +1798,7 @@ defmodule Ecto.Changeset do
   data given to the `changeset` is not empty.
 
   Do not use this function to validate associations that are required,
-  instead pass the `:required` option to `cast_assoc/3`.
+  instead pass the `:required` option to `cast_assoc/3` or `cast_embed/3`.
 
   Opposite to other validations, calling this function does not store
   the validation under the `changeset.validations` key. Instead, it
@@ -1784,14 +1818,15 @@ defmodule Ecto.Changeset do
   """
   @spec validate_required(t, list | atom, Keyword.t) :: t
   def validate_required(%Changeset{} = changeset, fields, opts \\ []) when not is_nil(fields) do
-    %{required: required, errors: errors, changes: changes} = changeset
+    %{required: required, errors: errors, changes: changes, types: types} = changeset
     trim = Keyword.get(opts, :trim, true)
     fields = List.wrap(fields)
 
     fields_with_errors =
       for field <- fields,
+          ensure_field_not_many!(types, field),
           missing?(changeset, field, trim),
-          ensure_field_exists!(changeset, field),
+          ensure_field_exists!(changeset, types, field),
           is_nil(errors[field]),
           do: field
 
@@ -1943,11 +1978,28 @@ defmodule Ecto.Changeset do
     end
   end
 
-  defp ensure_field_exists!(%Changeset{types: types, data: data}, field) do
+  defp ensure_field_exists!(changeset = %Changeset{}, types, field) do
     unless Map.has_key?(types, field) do
-      raise ArgumentError, "unknown field #{inspect(field)} in #{inspect(data)}"
+      raise ArgumentError, "unknown field #{inspect(field)} in #{inspect(changeset.data)}"
     end
     true
+  end
+
+  defp ensure_field_not_many!(types, field) do
+    case types do
+      %{^field => {:assoc, %Ecto.Association.Has{cardinality: :many}}} ->
+        IO.warn("attempting to validate has_many association #{inspect(field)} " <>
+                "with validate_required/3 which has no effect. You can pass the " <>
+                ":required option to Ecto.Changeset.cast_assoc/3 to achieve this.")
+
+      %{^field => {:embed, %Ecto.Embedded{cardinality: :many}}} ->
+        IO.warn("attempting to validate embed_many field #{inspect(field)} " <>
+                "with validate_required/3 which has no effect. You can pass the " <>
+                ":required option to Ecto.Changeset.cast_embed/3 to achieve this.")
+
+      _ ->
+        true
+    end
   end
 
   defp missing?(changeset, field, trim) when is_atom(field) do
@@ -2005,10 +2057,7 @@ defmodule Ecto.Changeset do
   @spec validate_inclusion(t, atom, Enum.t, Keyword.t) :: t
   def validate_inclusion(changeset, field, data, opts \\ []) do
     validate_change changeset, field, {:inclusion, data}, fn _, value ->
-      type =
-        changeset.types
-        |> Map.fetch!(field)
-        |> Ecto.Type.type()
+      type = Map.fetch!(changeset.types, field)
 
       if Ecto.Type.include?(type, value, data),
         do: [],
@@ -2023,6 +2072,8 @@ defmodule Ecto.Changeset do
   If you need to validate if a single value is inside the given enumerable,
   you should use `validate_inclusion/4` instead.
 
+  Type of the field must be array.
+
   ## Options
 
     * `:message` - the message on failure, defaults to "has an invalid entry"
@@ -2036,10 +2087,16 @@ defmodule Ecto.Changeset do
   @spec validate_subset(t, atom, Enum.t, Keyword.t) :: t
   def validate_subset(changeset, field, data, opts \\ []) do
     validate_change changeset, field, {:subset, data}, fn _, value ->
-      {:array, element_type} =
-        changeset.types
-        |> Map.fetch!(field)
-        |> Ecto.Type.type()
+      element_type =
+        case Map.fetch!(changeset.types, field) do
+          {:array, element_type} ->
+            element_type
+
+          type ->
+            # backwards compatibility: custom types use underlying type
+            {:array, element_type} = Ecto.Type.type(type)
+            element_type
+        end
 
       case Enum.any?(value, fn element -> not Ecto.Type.include?(element_type, element, data) end) do
         true -> [{field, {message(opts, "has an invalid entry"), [validation: :subset, enum: data]}}]
@@ -2063,10 +2120,7 @@ defmodule Ecto.Changeset do
   @spec validate_exclusion(t, atom, Enum.t, Keyword.t) :: t
   def validate_exclusion(changeset, field, data, opts \\ []) do
     validate_change changeset, field, {:exclusion, data}, fn _, value ->
-      type =
-        changeset.types
-        |> Map.fetch!(field)
-        |> Ecto.Type.type()
+      type = Map.fetch!(changeset.types, field)
 
       if Ecto.Type.include?(type, value, data), do:
         [{field, {message(opts, "is reserved"), [validation: :exclusion, enum: data]}}], else: []
@@ -2204,11 +2258,21 @@ defmodule Ecto.Changeset do
     validate_change changeset, field, {:number, opts}, fn
       field, value ->
         {message, opts} = Keyword.pop(opts, :message)
+
+        unless valid_number?(value) do
+          raise ArgumentError, "expected field `#{field}` to be a decimal, integer, or float, got: #{inspect(value)}"
+        end
+
         Enum.find_value opts, [], fn {spec_key, target_value} ->
           case Map.fetch(@number_validators, spec_key) do
             {:ok, {spec_function, default_message}} ->
-              validate_number(field, value, message || default_message,
+              unless valid_number?(target_value) do
+                raise ArgumentError, "expected option `#{spec_key}` to be a decimal, integer, or float, got: #{inspect(target_value)}"
+              end
+
+              compare_numbers(field, value, message || default_message,
                               spec_key, spec_function, target_value)
+
             :error ->
               supported_options = @number_validators |> Map.keys() |> Enum.map_join("\n", &"  * #{inspect(&1)}")
 
@@ -2224,23 +2288,30 @@ defmodule Ecto.Changeset do
     end
   end
 
-  defp validate_number(field, %Decimal{} = value, message, spec_key, _spec_function, target_value) do
-    result = Decimal.compare(value, decimal_new(target_value)) |> normalize_compare()
+  defp valid_number?(%Decimal{}), do: true
+  defp valid_number?(other), do: is_number(other)
+
+  defp compare_numbers(field, %Decimal{} = value, message, spec_key, _spec_function, %Decimal{} = target_value) do
+    result = Decimal.compare(value, target_value) |> normalize_compare()
     case decimal_compare(result, spec_key) do
-      true  -> nil
+      true -> nil
       false -> [{field, {message, validation: :number, kind: spec_key, number: target_value}}]
     end
   end
 
-  defp validate_number(field, value, message, spec_key, spec_function, target_value) when is_number(value) do
+  defp compare_numbers(field, value, message, spec_key, spec_function, %Decimal{} = target_value) do
+    compare_numbers(field, decimal_new(value), message, spec_key, spec_function, target_value)
+  end
+
+  defp compare_numbers(field, %Decimal{} = value, message, spec_key, spec_function, target_value) do
+    compare_numbers(field, value, message, spec_key, spec_function, decimal_new(target_value))
+  end
+
+  defp compare_numbers(field, value, message, spec_key, spec_function, target_value) do
     case apply(spec_function, [value, target_value]) do
       true  -> nil
       false -> [{field, {message, validation: :number, kind: spec_key, number: target_value}}]
     end
-  end
-
-  defp validate_number(_field, value, _message, _spec_key, _spec_function, _target_value) do
-    raise ArgumentError, "expected value to be of type Decimal, Integer or Float, got: #{inspect value}"
   end
 
   # TODO: Remove me once we support Decimal 2.0 only
@@ -2567,11 +2638,10 @@ defmodule Ecto.Changeset do
       Defaults to "is invalid"
     * `:name` - the name of the constraint. Required.
     * `:match` - how the changeset constraint name is matched against the
-      repo constraint, may be `:exact`, `:suffix` or `:prefix`. Defaults to `:exact`.
-      `:suffix` matches any repo constraint which `ends_with?` `:name`
-       to this changeset constraint.
-      `:prefix` matches any repo constraint which `starts_with?` `:name`
-       to this changeset constraint.
+      repo constraint, may be `:exact`, `:suffix` or `:prefix`. Defaults to
+      `:exact`. `:suffix` matches any repo constraint which `ends_with?` `:name`
+      to this changeset constraint. `:prefix` matches any repo constraint which
+      `starts_with?` `:name` to this changeset constraint.
 
   """
   def check_constraint(changeset, field, opts \\ []) do
@@ -2616,9 +2686,14 @@ defmodule Ecto.Changeset do
       explicitly for complex cases
 
     * `:match` - how the changeset constraint name is matched against the
-      repo constraint, may be `:exact` or `:suffix`. Defaults to `:exact`.
-      `:suffix` matches any repo constraint which `ends_with?` `:name`
-       to this changeset constraint.
+      repo constraint, may be `:exact`, `:suffix` or `:prefix`. Defaults to
+      `:exact`. `:suffix` matches any repo constraint which `ends_with?` `:name`
+      to this changeset constraint. `:prefix` matches any repo constraint which
+      `starts_with?` `:name` to this changeset constraint.
+
+    * `:error_key` - the key to which changeset error will be added when
+      check fails, defaults to the first field name of the given list of
+      fields.
 
   ## Complex constraints
 
@@ -2701,7 +2776,8 @@ defmodule Ecto.Changeset do
     constraint = opts[:name] || unique_index_name(changeset, fields)
     message    = message(opts, "has already been taken")
     match_type = Keyword.get(opts, :match, :exact)
-    add_constraint(changeset, :unique, to_string(constraint), match_type, first_field, message)
+    error_key  = Keyword.get(opts, :error_key, first_field)
+    add_constraint(changeset, :unique, to_string(constraint), match_type, error_key, message)
   end
 
   defp unique_index_name(changeset, fields) do
@@ -2747,13 +2823,19 @@ defmodule Ecto.Changeset do
     * `:name` - the constraint name. By default, the constraint
       name is inferred from the table + field. May be required
       explicitly for complex cases
+    * `:match` - how the changeset constraint name is matched against the
+      repo constraint, may be `:exact`, `:suffix` or `:prefix`. Defaults to
+      `:exact`. `:suffix` matches any repo constraint which `ends_with?` `:name`
+      to this changeset constraint. `:prefix` matches any repo constraint which
+      `starts_with?` `:name` to this changeset constraint.
 
   """
   @spec foreign_key_constraint(t, atom, Keyword.t) :: t
   def foreign_key_constraint(changeset, field, opts \\ []) do
     constraint = opts[:name] || "#{get_source(changeset)}_#{get_field_source(changeset, field)}_fkey"
+    match_type = Keyword.get(opts, :match, :exact)
     message    = message(opts, "does not exist")
-    add_constraint(changeset, :foreign_key, to_string(constraint), :exact, field, message, :foreign)
+    add_constraint(changeset, :foreign_key, to_string(constraint), match_type, field, message, :foreign)
   end
 
   @doc """
@@ -2788,6 +2870,11 @@ defmodule Ecto.Changeset do
     * `:name` - the constraint name. By default, the constraint
       name is inferred from the table + association field.
       May be required explicitly for complex cases
+    * `:match` - how the changeset constraint name is matched against the
+      repo constraint, may be `:exact`, `:suffix` or `:prefix`. Defaults to
+      `:exact`. `:suffix` matches any repo constraint which `ends_with?` `:name`
+      to this changeset constraint. `:prefix` matches any repo constraint which
+      `starts_with?` `:name` to this changeset constraint.
   """
   @spec assoc_constraint(t, atom, Keyword.t) :: t
   def assoc_constraint(changeset, assoc, opts \\ []) do
@@ -2800,8 +2887,9 @@ defmodule Ecto.Changeset do
             "assoc_constraint can only be added to belongs to associations, got: #{inspect other}"
       end
 
+    match_type = Keyword.get(opts, :match, :exact)
     message = message(opts, "does not exist")
-    add_constraint(changeset, :foreign_key, to_string(constraint), :exact, assoc, message, :assoc)
+    add_constraint(changeset, :foreign_key, to_string(constraint), match_type, assoc, message, :assoc)
   end
 
   @doc """
@@ -2837,6 +2925,11 @@ defmodule Ecto.Changeset do
     * `:name` - the constraint name. By default, the constraint
       name is inferred from the association table + association
       field. May be required explicitly for complex cases
+    * `:match` - how the changeset constraint name is matched against the
+      repo constraint, may be `:exact`, `:suffix` or `:prefix`. Defaults to
+      `:exact`. `:suffix` matches any repo constraint which `ends_with?` `:name`
+      to this changeset constraint. `:prefix` matches any repo constraint which
+      `starts_with?` `:name` to this changeset constraint.
 
   """
   @spec no_assoc_constraint(t, atom, Keyword.t) :: t
@@ -2852,7 +2945,8 @@ defmodule Ecto.Changeset do
             "no_assoc_constraint can only be added to has one/many associations, got: #{inspect other}"
       end
 
-    add_constraint(changeset, :foreign_key, to_string(constraint), :exact, assoc, message, :no_assoc)
+    match_type = Keyword.get(opts, :match, :exact)
+    add_constraint(changeset, :foreign_key, to_string(constraint), match_type, assoc, message, :no_assoc)
   end
 
   @doc """
@@ -2870,9 +2964,10 @@ defmodule Ecto.Changeset do
       name is inferred from the table + field. May be required
       explicitly for complex cases
     * `:match` - how the changeset constraint name is matched against the
-      repo constraint, may be `:exact` or `:suffix`. Defaults to `:exact`.
-      `:suffix` matches any repo constraint which `ends_with?` `:name`
-       to this changeset constraint.
+      repo constraint, may be `:exact`, `:suffix` or `:prefix`. Defaults to
+      `:exact`. `:suffix` matches any repo constraint which `ends_with?` `:name`
+      to this changeset constraint. `:prefix` matches any repo constraint which
+      `starts_with?` `:name` to this changeset constraint.
 
   """
   def exclusion_constraint(changeset, field, opts \\ []) do

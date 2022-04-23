@@ -95,6 +95,10 @@ defmodule Ecto.Query.Builder do
     escape_with_type(expr, type, params_acc, vars, env)
   end
 
+  def escape({:type, _, [{:coalesce, _, [_ | _]} = expr, type]}, _type, params_acc, vars, env) do
+    escape_with_type(expr, type, params_acc, vars, env)
+  end
+
   def escape({:type, _, [{:field, _, [_ | _]} = expr, type]}, _type, params_acc, vars, env) do
     escape_with_type(expr, type, params_acc, vars, env)
   end
@@ -124,10 +128,11 @@ defmodule Ecto.Query.Builder do
         the first argument of type/2 must be one of:
 
           * interpolations, such as ^value
-          * fields, such as p.foo or field(p)
-          * fragments, such fragment("foo(?)", value)
+          * fields, such as p.foo or field(p, :foo)
+          * fragments, such as fragment("foo(?)", value)
           * an arithmetic expression (+, -, *, /)
           * an aggregation or window expression (avg, count, min, max, sum, over, filter)
+          * a conditional expression (coalesce)
           * access/json paths (p.column[0].field)
 
         Got: #{Macro.to_string(expr)}
@@ -252,7 +257,7 @@ defmodule Ecto.Query.Builder do
   # literals
   def escape({:<<>>, _, args} = expr, type, params_acc, vars, _env) do
     valid? = Enum.all?(args, fn
-      {:::, _, [left, _]} -> is_integer(left) or is_binary(left)
+      {:"::", _, [left, _]} -> is_integer(left) or is_binary(left)
       left -> is_integer(left) or is_binary(left)
     end)
 
@@ -417,6 +422,11 @@ defmodule Ecto.Query.Builder do
     error! "Tuples can only be used in comparisons with literal tuples of the same size"
   end
 
+  # Unnecessary parentheses around an expression
+  def escape({:__block__, _, [expr]}, type, params_acc, vars, env) do
+    escape(expr, type, params_acc, vars, env)
+  end
+
   # Other functions - no type casting
   def escape({name, _, args} = expr, type, params_acc, vars, env) when is_atom(name) and is_list(args) do
     case call_type(name, length(args)) do
@@ -449,16 +459,9 @@ defmodule Ecto.Query.Builder do
   end
 
   # Raise nice error message for remote calls
-  def escape({{:., _, [mod, fun]}, _, args} = other, _type, _params_acc, _vars, _env)
+  def escape({{:., _, [_, fun]}, _, _} = other, type, params_acc, vars, env)
       when is_atom(fun) do
-    fun_arity = "#{fun}/#{length(args)}"
-
-    error! """
-    `#{Macro.to_string(other)}` is not a valid query expression. \
-    If you want to invoke #{Macro.to_string(mod)}.#{fun_arity} in \
-    a query, make sure that the module #{Macro.to_string(mod)} \
-    is required and that #{fun_arity} is a macro
-    """
+    try_expansion(other, type, params_acc, vars, env)
   end
 
   # For everything else we raise
@@ -584,10 +587,17 @@ defmodule Ecto.Query.Builder do
     {:{}, [], [dot, [], []]}
   end
 
-  defp escape_field!({kind, _, [atom]}, field, _vars)
+  defp escape_field!({kind, _, [value]}, field, _vars)
        when kind in [:as, :parent_as] do
-    atom  = quoted_atom!(atom, "#{kind}/1")
-    as    = {:{}, [], [kind, [], [atom]]}
+    value =
+      case value do
+        {:^, _, [value]} ->
+          value
+
+        other ->
+          quoted_atom!(other, "#{kind}/1")
+      end
+    as    = {:{}, [], [kind, [], [value]]}
     field = quoted_atom!(field, "field/2")
     dot   = {:{}, [], [:., [], [as, field]]}
     {:{}, [], [dot, [], []]}
@@ -677,6 +687,8 @@ defmodule Ecto.Query.Builder do
     do: type
   def validate_type!({:__aliases__, _, _} = type, _vars, env),
     do: Macro.expand(type, get_env(env))
+  def validate_type!({:parameterized, _, _} = type, _vars, _env),
+    do: type
   def validate_type!(type, _vars, _env) when is_atom(type),
     do: type
   def validate_type!({{:., _, [{var, _, context}, field]}, _, []}, vars, _env)
@@ -687,7 +699,8 @@ defmodule Ecto.Query.Builder do
     do: {find_var!(var, vars), field}
 
   def validate_type!(type, _vars, _env) do
-    error! "type/2 expects an alias, atom or source.field as second argument, got: `#{Macro.to_string(type)}`"
+    error! "type/2 expects an alias, atom, initialized parameterized type or " <> 
+           "source.field as second argument, got: `#{Macro.to_string(type)}`"
   end
 
   @always_tagged [:binary]
@@ -838,6 +851,8 @@ defmodule Ecto.Query.Builder do
   defp escape_bind({{var, _, context}, ix}) when is_atom(var) and is_atom(context),
     do: {:pos, var, ix}
   defp escape_bind({{name, {var, _, context}}, _ix}) when is_atom(name) and is_atom(var) and is_atom(context),
+    do: {:named, var, name}
+  defp escape_bind({{name, {{:^, _, _} = var, _, context}}, _ix}) when is_atom(name) and is_atom(context),
     do: {:named, var, name}
   defp escape_bind({{{:^, _, [expr]}, {var, _, context}}, _ix}) when is_atom(var) and is_atom(context),
     do: {:named, var, expr}

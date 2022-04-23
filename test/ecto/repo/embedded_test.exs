@@ -254,6 +254,22 @@ defmodule Ecto.Repo.EmbeddedTest do
     refute embed.inserted_at
     assert embed.updated_at
 
+    kw_changeset = Ecto.Changeset.put_embed(changeset, :embed, id: @uuid, x: "def")
+    schema = TestRepo.update!(kw_changeset)
+    embed = schema.embed
+    assert embed.id == @uuid
+    assert embed.x == "def"
+    refute embed.inserted_at
+    assert embed.updated_at
+
+    map_changeset = Ecto.Changeset.put_embed(changeset, :embed, %{id: @uuid, x: "def"})
+    schema = TestRepo.update!(map_changeset)
+    embed = schema.embed
+    assert embed.id == @uuid
+    assert embed.x == "def"
+    refute embed.inserted_at
+    assert embed.updated_at
+
     changeset =
       %MySchema{id: 1, embeds: [sample]}
       |> Ecto.Changeset.change
@@ -302,6 +318,27 @@ defmodule Ecto.Repo.EmbeddedTest do
       |> Ecto.Changeset.put_embed(:embeds, [])
     schema = TestRepo.update!(changeset)
     assert schema.embeds == []
+  end
+
+  test "updated_at is auto-updated" do
+    embed = %MyEmbed{x: "xyz", id: @uuid}
+    schema = TestRepo.insert!(%MySchema{id: 1, embed: embed})
+    inserted_at_orig = schema.embed.inserted_at
+    updated_at_orig = schema.embed.updated_at
+
+    embed_changeset = Ecto.Changeset.change(schema.embed, %{x: "abc"})
+
+    changeset =
+      schema
+      |> Ecto.Changeset.change()
+      |> Ecto.Changeset.put_embed(:embed, embed_changeset)
+
+    schema = TestRepo.update!(changeset)
+    inserted_at_new = schema.embed.inserted_at
+    updated_at_new = schema.embed.updated_at
+
+    assert NaiveDateTime.compare(inserted_at_new, inserted_at_orig) == :eq
+    assert NaiveDateTime.compare(updated_at_new, updated_at_orig) == :gt
   end
 
   test "returns untouched changeset on constraint mismatch on update" do
