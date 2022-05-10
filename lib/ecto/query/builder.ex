@@ -477,8 +477,11 @@ defmodule Ecto.Query.Builder do
   defp escape_with_type(expr, type, params_acc, vars, env) do
     type = validate_type!(type, vars, env)
     {expr, params_acc} = escape(expr, type, params_acc, vars, env)
-    {{:{}, [], [:type, [], [expr, Macro.escape(type)]]}, params_acc}
+    {{:{}, [], [:type, [], [expr, escape_type(type)]]}, params_acc}
   end
+
+  defp escape_type({:parameterized, _, _} = param), do: Macro.escape(param)
+  defp escape_type(type), do: type
 
   defp escape_subquery({:subquery, _, [expr]}, _, {params, subqueries}, _vars, _env) do
     subquery = quote(do: Ecto.Query.subquery(unquote(expr)))
@@ -815,22 +818,28 @@ defmodule Ecto.Query.Builder do
     end
   end
 
-  def calculate_named_binds(query, []), do: {query, []}
-  def calculate_named_binds(query, vars) do
+  defp calculate_named_binds(query, []), do: {query, []}
+  defp calculate_named_binds(query, vars) do
+    assignments =
+      for {:named, key, name} <- vars do
+        quote do
+          unquote({key, [], __MODULE__}) = unquote(__MODULE__).count_alias!(query, unquote(name))
+        end
+      end
+
     query =
       quote do
         query = Ecto.Queryable.to_query(unquote(query))
+        unquote_splicing(assignments)
+        query
       end
 
-    vars =
-      for {:named, key, name} <- vars do
-        {key,
-         quote do
-           Ecto.Query.Builder.count_alias!(query, unquote(name))
-         end}
+    pairs =
+      for {:named, key, _name} <- vars do
+        {key, {key, [], __MODULE__}}
       end
 
-    {query, vars}
+    {query, pairs}
   end
 
   @doc """
@@ -851,8 +860,6 @@ defmodule Ecto.Query.Builder do
   defp escape_bind({{var, _, context}, ix}) when is_atom(var) and is_atom(context),
     do: {:pos, var, ix}
   defp escape_bind({{name, {var, _, context}}, _ix}) when is_atom(name) and is_atom(var) and is_atom(context),
-    do: {:named, var, name}
-  defp escape_bind({{name, {{:^, _, _} = var, _, context}}, _ix}) when is_atom(name) and is_atom(context),
     do: {:named, var, name}
   defp escape_bind({{{:^, _, [expr]}, {var, _, context}}, _ix}) when is_atom(var) and is_atom(context),
     do: {:named, var, expr}
