@@ -397,6 +397,60 @@ defmodule Ecto.Multi do
     run(multi, name, operation_fun({:delete, fun}, opts))
   end
 
+  @doc """
+  Runs a query expecting one result and stores it in the multi.
+
+  Accepts the same arguments and options as `c:Ecto.Repo.one/2`.
+
+  ## Example
+
+      Ecto.Multi.new()
+      |> Ecto.Multi.one(:post, Post)
+      |> MyApp.Repo.transaction()
+  """
+  @spec one(
+          t,
+          name,
+          queryable :: Ecto.Queryable.t | (any -> Ecto.Queryable.t),
+          opts :: Keyword.t
+        ) :: t
+  def one(multi, name, queryable_or_fun, opts \\ [])
+
+  def one(multi, name, fun, opts) when is_function(fun, 1) do
+    run(multi, name, operation_fun({:one, fun}, opts))
+  end
+
+  def one(multi, name, queryable, opts) do
+    run(multi, name, operation_fun({:one, fn _ -> queryable end}, opts))
+  end
+
+  @doc """
+  Runs a query and stores all entries in the multi.
+
+  Accepts the same arguments and options as `c:Ecto.Repo.all/2` does.
+
+  ## Example
+
+      Ecto.Multi.new()
+      |> Ecto.Multi.all(:all, Post)
+      |> MyApp.Repo.transaction()
+  """
+  @spec all(
+          t,
+          name,
+          queryable :: Ecto.Queryable.t | (any -> Ecto.Queryable.t),
+          opts :: Keyword.t
+        ) :: t
+  def all(multi, name, queryable_or_fun, opts \\ [])
+
+  def all(multi, name, fun, opts) when is_function(fun, 1) do
+    run(multi, name, operation_fun({:all, fun}, opts))
+  end
+
+  def all(multi, name, queryable, opts) do
+    run(multi, name, operation_fun({:all, fn _ -> queryable end}, opts))
+  end
+
   defp add_changeset(multi, action, name, changeset, opts) when is_list(opts) do
     add_operation(multi, name, {:changeset, put_action(changeset, action), opts})
   end
@@ -615,13 +669,30 @@ defmodule Ecto.Multi do
   @doc """
   Adds a value to the changes so far under the given name.
 
+  The given `value` is added to the multi before the transaction starts.
+  If you would like to run arbitrary functions as part of your transaction,
+  see `run/3` or `run/5`.
+
   ## Example
 
+  Imagine there is an existing company schema that you retrieved from
+  the database. You can insert it as a change in the multi using `put/3`:
+
       Ecto.Multi.new()
-      |> Ecto.Multi.put(:params, params)
-      |> Ecto.Multi.insert(:user, fn changes -> User.changeset(changes.params) end)
-      |> Ecto.Multi.insert(:person, fn changes -> Person.changeset(changes.user, changes.params) end)
+      |> Ecto.Multi.put(:company, company)
+      |> Ecto.Multi.insert(:user, fn changes -> User.changeset(changes.company) end)
+      |> Ecto.Multi.insert(:person, fn changes -> Person.changeset(changes.user, changes.company) end)
       |> MyApp.Repo.transaction()
+
+  In the example above there isn't a large benefit in putting the
+  `company` in the multi, because you could also access the
+  `company` variable directly inside the anonymous function.
+  
+  However, the benefit of `put/3` is when composing `Ecto.Multi`s.
+  If the insert operations above were defined in another module,
+  you could use `put(:company, company)` to inject changes that
+  will be accessed by other functions down the chain, removing
+  the need to pass both `multi` and `company` values around.
   """
   @spec put(t, name, any) :: t
   def put(multi, name, value) do
@@ -777,6 +848,24 @@ defmodule Ecto.Multi do
   defp operation_fun({:delete_all, fun}, opts) do
     fn repo, changes ->
       {:ok, repo.delete_all(fun.(changes), opts)}
+    end
+  end
+
+  defp operation_fun({:one, fun}, opts) do
+    fn repo, changes ->
+      {:ok, repo.one(fun.(changes), opts)}
+    end
+  end
+
+  defp operation_fun({:one!, fun}, opts) do
+    fn repo, changes ->
+      {:ok, repo.one!(fun.(changes), opts)}
+    end
+  end
+
+  defp operation_fun({:all, fun}, opts) do
+    fn repo, changes ->
+      {:ok, repo.all(fun.(changes), opts)}
     end
   end
 
