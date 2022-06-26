@@ -119,20 +119,21 @@ defmodule Ecto.Query.Planner do
   """
   def query(query, operation, cache, adapter, counter) do
     {query, params, key} = plan(query, operation, adapter)
-    query_with_cache(key, query, operation, cache, adapter, counter, params)
+    {cast_params, dump_params} = Enum.unzip(params)
+    query_with_cache(key, query, operation, cache, adapter, counter, cast_params, dump_params)
   end
 
-  defp query_with_cache(key, query, operation, cache, adapter, counter, params) do
+  defp query_with_cache(key, query, operation, cache, adapter, counter, cast_params, dump_params) do
     case query_lookup(key, query, operation, cache, adapter, counter) do
       {_, select, prepared} ->
-        {build_meta(query, select), {:nocache, prepared}, params}
+        {build_meta(query, select), {:nocache, prepared}, cast_params, dump_params}
       {_key, :cached, select, cached} ->
         update = &cache_update(cache, key, &1)
         reset = &cache_reset(cache, key, &1)
-        {build_meta(query, select), {:cached, update, reset, cached}, params}
+        {build_meta(query, select), {:cached, update, reset, cached}, cast_params, dump_params}
       {_key, :cache, select, prepared} ->
         update = &cache_update(cache, key, &1)
-        {build_meta(query, select), {:cache, update, prepared}, params}
+        {build_meta(query, select), {:cache, update, prepared}, cast_params, dump_params}
     end
   end
 
@@ -204,6 +205,7 @@ defmodule Ecto.Query.Planner do
     |> plan_combinations(adapter)
     |> plan_ctes(adapter)
     |> plan_wheres(adapter)
+    |> plan_select(adapter)
     |> plan_cache(operation, adapter)
   rescue
     e ->
@@ -603,6 +605,17 @@ defmodule Ecto.Query.Planner do
     %{query | wheres: wheres}
   end
 
+  @spec plan_select(Ecto.Query.t, module) :: Ecto.Query.t
+  defp plan_select(query, adapter) do
+    case query do
+      %{select: %{subqueries: [_ | _] = subqueries}} ->
+        subqueries = Enum.map(subqueries, &plan_subquery(&1, query, nil, adapter, false))
+        put_in(query.select.subqueries, subqueries)
+
+      query -> query
+    end
+  end
+
   @doc """
   Prepare the parameters by merging and casting them according to sources.
   """
@@ -725,10 +738,14 @@ defmodule Ecto.Query.Planner do
 
       {v, type}, {acc, cacheable?} ->
         case cast_param(kind, query, expr, v, type, adapter) do
-          {:in, v} -> {Enum.reverse(v, acc), false}
-          v -> {[v | acc], cacheable?}
+          {cast_v, {:in, dump_v}} -> {split_in_params(cast_v, dump_v, acc), false}
+          cast_v_and_dump_v -> {[cast_v_and_dump_v | acc], cacheable?}
         end
     end
+  end
+
+  defp split_in_params(cast_v, dump_v, acc) do
+    Enum.zip(cast_v, dump_v) |> Enum.reverse(acc)
   end
 
   defp merge_cache(_left, _right, false),  do: :nocache
@@ -801,8 +818,9 @@ defmodule Ecto.Query.Planner do
 
   defp cast_param(kind, type, v, adapter) do
     with {:ok, type} <- normalize_param(kind, type, v),
-         {:ok, v} <- cast_param(kind, type, v),
-         do: dump_param(adapter, type, v)
+         {:ok, cast_v} <- cast_param(kind, type, v),
+         {:ok, dump_v} <- dump_param(adapter, type, cast_v),
+         do: {:ok, {cast_v, dump_v}}
   end
 
   @doc """
