@@ -1760,9 +1760,9 @@ defmodule Ecto.Repo do
         repo.insert!(%Post{})
       end)
 
-  If an unhandled error occurs the transaction will be rolled back
-  and the error will bubble up from the transaction function.
-  If no error occurred the transaction will be committed when the
+  If an Elixir exception occurs the transaction will be rolled back
+  and the exception will bubble up from the transaction function.
+  If no exception occurs, the transaction is committed when the
   function returns. A transaction can be explicitly rolled back
   by calling `c:rollback/1`, this will immediately leave the function
   and return the value given to `rollback` as `{:error, value}`.
@@ -1770,11 +1770,13 @@ defmodule Ecto.Repo do
   A successful transaction returns the value returned by the function
   wrapped in a tuple as `{:ok, value}`.
 
+  ### Nested transactions
+
   If `c:transaction/2` is called inside another transaction, the function
   is simply executed, without wrapping the new transaction call in any
   way. If there is an error in the inner transaction and the error is
   rescued, or the inner transaction is rolled back, the whole outer
-  transaction is marked as tainted, guaranteeing nothing will be committed.
+  transaction is aborted, guaranteeing nothing will be committed.
 
   Below is an example of how rollbacks work with nested transactions:
 
@@ -1795,16 +1797,24 @@ defmodule Ecto.Repo do
               # `rollback/1` stops execution, so code here won't be run
             end)
 
-          # When the inner transaction was rolled back, execution in this outer
-          # transaction is also stopped immediately. When this occurs, the
-          # outer transaction(s) return `{:error, :rollback}`.
+          # The transaction here is now aborted and any further
+          # operation will raise an exception.
         end)
+
+  See the "Aborted transactions" section for more examples of aborted
+  transactions and how to handle them.
+
+  In practice, managing nested transactions can become complex quickly.
+  For this reason, Ecto provides `Ecto.Multi` for composing transactions.
 
   ## Use with Ecto.Multi
 
-  Besides functions, transactions can be used with an `Ecto.Multi` struct.
-  A transaction will be started, all operations applied and in case of
-  success committed returning `{:ok, changes}`:
+  `c:transaction/2` also accepts the `Ecto.Multi` struct as first argument.
+  `Ecto.Multi` allows you to compose transactions operations, step by step,
+  and manage what happens in case of success or failure.
+
+  When an `Ecto.Multi` is given to this function, a transaction will be started,
+  all operations applied and in case of success committed returning `{:ok, changes}`:
 
       # With Ecto.Multi
       Ecto.Multi.new()
@@ -1812,11 +1822,49 @@ defmodule Ecto.Repo do
       |> MyRepo.transaction
 
   In case of any errors the transaction will be rolled back and
-  `{:error, failed_operation, failed_value, changes_so_far}` will be
-  returned.
+  `{:error, failed_operation, failed_value, changes_so_far}` will be returned.
 
-  You can read more about using transactions with `Ecto.Multi` as well as
-  see some examples in the `Ecto.Multi` documentation.
+  Explore the `Ecto.Multi` documentation to learn more and find detailed examples.
+
+  ## Aborted transactions
+
+  When an operation inside a transaction fails, the database will actually
+  abort the transaction. For example, if you attempt an insert that violates
+  a unique constraint, the insert fails and the transaction is aborted.
+  In such cases, any further operation inside the transaction will raise
+  exceptions.
+
+  Take the following transaction:
+
+      Repo.transaction(fn repo ->
+        case repo.insert(changeset) do
+          {:ok, post} ->
+            post
+
+          {:error, changeset} ->
+            repo.insert(%Failure{})
+        end
+      end)
+
+  If the changeset is invalid before it reaches the database,
+  for example due to a validation error, no statement is sent
+  to the database, an `:error` tuple is returned, and the
+  `repo.insert(%Failure{})` operation will execute as usual.
+  However, if the changeset is valid but the insert operation
+  fails due to a database constraint, the subsequent
+  `repo.insert(%Failure{})` operation will raise an exception
+  because the database has aborted the transaction and made any
+  subsequent operation invalid. In Postgres, it would look like
+  this:
+
+      ** (Postgrex.Error) ERROR 25P02 (in_failed_sql_transaction) current transaction is aborted, commands ignored until end of transaction block
+
+  Such scenarios must be handled outside of the transaction.
+  For example, you can choose to perform an explicit `repo.rollback`
+  call in the `{:error, changeset}` clause and then perform the
+  `repo.insert(%Failure{})` outside of the transaction. Alternatively,
+  consider using `Ecto.Multi`, as they automatically rollback whenever
+  an operation fails.
 
   ## Working with processes
 
