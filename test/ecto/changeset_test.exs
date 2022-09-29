@@ -207,6 +207,17 @@ defmodule Ecto.ChangesetTest do
     assert changeset.changes == %{}
   end
 
+  test "cast/4: with force_changes" do
+    params = %{"title" => "", "body" => nil}
+    struct = %Post{title: "", body: nil}
+
+    changeset = cast(struct, params, ~w(title body)a, force_changes: true)
+    assert changeset.changes == %{title: "", body: nil}
+
+    changeset = cast(struct, %{"title" => "not empty", "body" => "empty"}, ~w(title body)a, force_changes: true, empty_values: ["empty"])
+    assert changeset.changes == %{title: "not empty", body: nil}
+  end
+
   test "cast/4: with data and types" do
     data   = {%{title: "hello"}, %{title: :string, upvotes: :integer}}
     params = %{"title" => "world", "upvotes" => "0"}
@@ -1729,39 +1740,35 @@ defmodule Ecto.ChangesetTest do
       refute_receive [MockRepo, function: :exists?, query: %Ecto.Query{}, opts: []]
     end
 
-    test "does not allow schemaless changesets" do
+    test "raise with schemaless changeset" do
+      msg = ~r/unsafe_validate_unique\/4 does not work with schemaless changesets/
       types = %{title: :string, upvotes: :integer}
 
       # struct
       changeset = Ecto.Changeset.cast({%NoSchemaPost{}, types}, %{title: "hi"}, Map.keys(types))
-
-      msg =
-        ~s/unsafe_validate_unique\/4 does not work with schemaless changesets or embedded schemas, data received: %Ecto.ChangesetTest.NoSchemaPost{title: nil, upvotes: nil}/
-
-      assert_raise ArgumentError, msg, fn ->
-        unsafe_validate_unique(changeset, [:title], TestRepo)
-      end
+      assert_raise ArgumentError, msg, fn -> unsafe_validate_unique(changeset, [:title], TestRepo) end
 
       # map
       changeset = Ecto.Changeset.cast({%{}, types}, %{title: "hi"}, Map.keys(types))
-
-      msg =
-        ~s/unsafe_validate_unique\/4 does not work with schemaless changesets or embedded schemas, data received: %{}/
-
-      assert_raise ArgumentError, msg, fn ->
-        unsafe_validate_unique(changeset, [:title], TestRepo)
-      end
+      assert_raise ArgumentError, msg, fn -> unsafe_validate_unique(changeset, [:title], TestRepo) end
     end
 
-    test "does not allow embedded schemas" do
+    test "raise with embedded schema without base query" do
       changeset = Ecto.Changeset.change(%SocialSource{})
 
       msg =
-        ~s/unsafe_validate_unique\/4 does not work with schemaless changesets or embedded schemas, data received: %Ecto.ChangesetTest.SocialSource{origin: nil, url: nil}/
+        ~r/unsafe_validate_unique\/4 does not work with embedded schemas unless the `:query` option is specified/
 
       assert_raise ArgumentError, msg, fn ->
         unsafe_validate_unique(changeset, [:origin], TestRepo)
       end
+    end
+
+    test "allow embedded schema with base query" do
+      changeset = Ecto.Changeset.change(%SocialSource{})
+      base_query = Ecto.Query.from(c in Comment)
+      changeset = unsafe_validate_unique(changeset, [:origin], TestRepo, query: base_query)
+      assert changeset.errors == []
     end
   end
 

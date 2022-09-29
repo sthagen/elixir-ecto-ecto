@@ -436,7 +436,9 @@ defmodule Ecto.Changeset do
   During casting, all `permitted` parameters whose values match the specified
   type information will have their key name converted to an atom and stored
   together with the value as a change in the `:changes` field of the changeset.
-  All parameters that are not explicitly permitted are ignored.
+  If the cast value matches the current value for the field, it will not be
+  included in `:changes` unless the `:force_changes: true` option is
+  provided. All parameters that are not explicitly permitted are ignored.
 
   If casting of all fields is successful, the changeset is returned as valid.
 
@@ -449,6 +451,7 @@ defmodule Ecto.Changeset do
       Empty values are always replaced by the default value of the respective field.
       If the field is an array type, any empty value inside of the array will be removed.
       Defaults to `[""]`
+    * `:force_changes` - a boolean indicating whether to include values that don't alter the current data in `:changes`. Defaults to `false`
 
   ## Examples
 
@@ -523,6 +526,7 @@ defmodule Ecto.Changeset do
 
   defp cast(%{} = data, %{} = types, %{} = changes, %{} = params, permitted, opts) when is_list(permitted) do
     empty_values = Keyword.get(opts, :empty_values, @empty_values)
+    force? = Keyword.get(opts, :force_changes, false)
     params = convert_params(params)
 
     defaults = case data do
@@ -532,7 +536,7 @@ defmodule Ecto.Changeset do
 
     {changes, errors, valid?} =
       Enum.reduce(permitted, {changes, [], true},
-                  &process_param(&1, params, types, data, empty_values, defaults, &2))
+                  &process_param(&1, params, types, data, empty_values, defaults, force?, &2))
 
     %Changeset{params: params, data: data, valid?: valid?,
                errors: Enum.reverse(errors), changes: changes, types: types}
@@ -543,7 +547,7 @@ defmodule Ecto.Changeset do
                           message: "expected params to be a :map, got: `#{inspect params}`"
   end
 
-  defp process_param(key, params, types, data, empty_values, defaults, {changes, errors, valid?}) do
+  defp process_param(key, params, types, data, empty_values, defaults, force?, {changes, errors, valid?}) do
     {key, param_key} = cast_key(key)
     type = cast_type!(types, key)
 
@@ -553,7 +557,7 @@ defmodule Ecto.Changeset do
         _ -> Map.get(data, key)
       end
 
-    case cast_field(key, param_key, type, params, current, empty_values, defaults, valid?) do
+    case cast_field(key, param_key, type, params, current, empty_values, defaults, force?, valid?) do
       {:ok, value, valid?} ->
         {Map.put(changes, key, value), errors, valid?}
       :missing ->
@@ -585,16 +589,17 @@ defmodule Ecto.Changeset do
   defp cast_key(key) when is_atom(key),
     do: {key, Atom.to_string(key)}
 
-  defp cast_key(key),
-    do: raise ArgumentError, "cast/3 expects a list of atom keys, got key: `#{inspect key}`"
+  defp cast_key(key) do
+    raise ArgumentError, "cast/3 expects a list of atom keys, got key: `#{inspect key}`"
+  end
 
-  defp cast_field(key, param_key, type, params, current, empty_values, defaults, valid?) do
+  defp cast_field(key, param_key, type, params, current, empty_values, defaults, force?, valid?) do
     case params do
       %{^param_key => value} ->
         value = filter_empty_values(type, value, empty_values, defaults, key)
         case Ecto.Type.cast(type, value) do
           {:ok, value} ->
-            if Ecto.Type.equal?(type, current, value) do
+            if not force? and Ecto.Type.equal?(type, current, value) do
               :missing
             else
               {:ok, value, valid?}
@@ -1887,13 +1892,29 @@ defmodule Ecto.Changeset do
   """
   @spec unsafe_validate_unique(t, atom | [atom, ...], Ecto.Repo.t, Keyword.t) :: t
   def unsafe_validate_unique(%Changeset{} = changeset, fields, repo, opts \\ []) when is_list(opts) do
-    {validations, schema} =
-      case changeset do
-        %{validations: validations, data: %schema{__meta__: %Metadata{}}} ->
-          {validations, schema}
+    {repo_opts, opts} = Keyword.pop(opts, :repo_opts, [])
+    %{data: data, validations: validations} = changeset
 
-        %{data: data} ->
-          raise ArgumentError, "unsafe_validate_unique/4 does not work with schemaless changesets or embedded schemas, data received: #{inspect(data)}"
+    unless is_struct(data) and function_exported?(data.__struct__, :__schema__, 1) do
+      raise ArgumentError,
+            "unsafe_validate_unique/4 does not work with schemaless changesets, got #{inspect(data)}"
+    end
+
+    schema =
+      case {changeset.data, opts[:query]} do
+        # regular schema
+        {%schema{__meta__: %Metadata{}}, _} ->
+          schema
+
+        # embedded schema with base query
+        {%schema{}, base_query} when base_query != nil ->
+          schema
+
+        # embedded schema without base query
+        {data, _} ->
+          raise ArgumentError,
+                "unsafe_validate_unique/4 does not work with embedded schemas unless " <>
+                  "the `:query` option is specified, got: #{inspect(data)}"
       end
 
     fields = List.wrap(fields)
@@ -1915,8 +1936,6 @@ defmodule Ecto.Changeset do
     if unrelated_changes? || any_nil_values_for_fields? || any_prior_errors_for_fields? do
       changeset
     else
-      {repo_opts, opts} = Keyword.pop(opts, :repo_opts, [])
-
       query =
         Keyword.get(opts, :query, schema)
         |> maybe_exclude_itself(schema, changeset)
@@ -3014,10 +3033,14 @@ defmodule Ecto.Changeset do
 
   defp get_source(%{data: %{__meta__: %{source: source}}}) when is_binary(source),
     do: source
-  defp get_source(%{data: data}), do:
+
+  defp get_source(%{data: data}) do
     raise ArgumentError, "cannot add constraint to changeset because it does not have a source, got: #{inspect data}"
-  defp get_source(item), do:
+  end
+
+  defp get_source(item) do
     raise ArgumentError, "cannot add constraint because a changeset was not supplied, got: #{inspect item}"
+  end
 
   defp get_assoc(%{types: types}, assoc) do
     case Map.fetch(types, assoc) do
