@@ -811,8 +811,11 @@ defmodule Ecto.Query do
       # Ecto.Queryable
       from(City, limit: 1)
 
-      # Fragment
-      from(f in fragment("generate_series(?, ?) as x", ^0, ^100000), select f.x)
+      # Fragment with user-defined function and predefined columns
+      from(f in fragment("my_table_valued_function(arg)"), select: f.x))
+
+      # Fragment with built-in function and undefined columns
+      from(f in fragment("select generate_series(?::integer, ?::integer) as x", ^0, ^10), select: f.x)
 
   ## Expressions examples
 
@@ -863,7 +866,7 @@ defmodule Ecto.Query do
     end
 
     {kw, as, prefix, hints} = collect_as_and_prefix_and_hints(kw, nil, nil, nil)
-    {quoted, binds, count_bind} = Builder.From.build(expr, __CALLER__, as, prefix, hints)
+    {quoted, binds, count_bind} = Builder.From.build(expr, __CALLER__, as, prefix, List.wrap(hints))
     from(kw, __CALLER__, count_bind, quoted, to_query_binds(binds))
   end
 
@@ -2305,13 +2308,13 @@ defmodule Ecto.Query do
       if has_named_binding?(query, :comments) do
         query
       else
-        join(query, :left, c in assoc(p, :comments), as: :comments)
+        join(query, :left, [p], c in assoc(p, :comments), as: :comments)
       end
 
   With this function it can be simplified to:
 
       with_named_binding(query, :comments, fn  query, binding ->
-        join(query, :left, a in assoc(p, ^binding), as: ^binding)
+        join(query, :left, [p], a in assoc(p, ^binding), as: ^binding)
       end) 
 
   For more information on named bindings see "Named bindings" in this module doc or `has_named_binding/2`. 
