@@ -1,5 +1,35 @@
 # Changelog for v3.x
 
+## v3.10.0-dev
+
+### Enhancements
+
+  * [Ecto.Changeset] Allow `:empty_values` option in `cast/4` to include a function which must return true if the value is empty
+  * [Ecto.Changeset] `cast/4` will by default consider strings made only of whitespace characters to be empty. This unifies the handling of empty values between `cast/4` and `validate_required/3`. **If you use `:empty_values` and you want to preserve the new behaviour throughout, you may update your code from this**
+
+        Ecto.Changeset.cast(changeset, params, [:field1, :field2], empty_values: ["", []])
+
+  to
+
+        empty_values = Ecto.Changeset.empty_values([[]])
+        Ecto.Changeset.cast(changeset, params, [:field1, :field2], empty_values: empty_values)
+
+### Bug fixes
+
+  * [Ecto.Changeset] Make unsafe validate unique exclude primary key only for loaded schemas
+
+## v3.9.2 (2022-11-18)
+
+### Enhancements
+
+ * [Ecto.Query] Allow `selected_as` inside CTE
+ * [Ecto.Query] Allow `selected_as` to be used in subquery
+
+### Bug fixes
+
+  * [Ecto.Repo] Fix preloading through associations on `nil`
+  * [Ecto.Query] Fix select merging a `selected_as` field into a source
+
 ## v3.9.1 (2022-10-06)
 
 ### Enhancements
