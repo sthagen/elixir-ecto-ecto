@@ -125,6 +125,8 @@ defmodule Ecto.MixProject do
       "guides/howtos/Replicas and dynamic repositories.md",
       "guides/howtos/Schemaless queries.md",
       "guides/howtos/Test factories.md",
+      "cheatsheets/crud.cheatmd",
+      "cheatsheets/associations.cheatmd",
       "CHANGELOG.md"
     ]
   end
@@ -133,7 +135,8 @@ defmodule Ecto.MixProject do
 
   defp groups_for_extras do
     [
-      "Introduction": ~r/guides\/introduction\/.?/,
+      Introduction: ~r/guides\/introduction\/.?/,
+      Cheatsheets: ~r/cheatsheets\/.?/,
       "How-To's": ~r/guides\/howtos\/.?/
     ]
   end
