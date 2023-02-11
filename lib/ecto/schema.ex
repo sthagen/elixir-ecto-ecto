@@ -429,6 +429,8 @@ defmodule Ecto.Schema do
     from the database after every write (insert or update);
 
   * `__schema__(:autogenerate_id)` - Primary key that is auto generated on insert;
+  * `__schema__(:autogenerate_fields)` - Returns a list of fields names that are auto
+    generated on insert, except for the primary key;
 
   * `__schema__(:redact_fields)` - Returns a list of redacted field names;
 
@@ -642,6 +644,7 @@ defmodule Ecto.Schema do
         def __schema__(:loaded), do: unquote(Macro.escape(loaded))
         def __schema__(:redact_fields), do: unquote(redacted_fields)
         def __schema__(:virtual_fields), do: unquote(Enum.map(virtual_fields, &elem(&1, 0)))
+        def __schema__(:autogenerate_fields), do: unquote(Enum.flat_map(autogenerate, &elem(&1, 0)))
 
         def __schema__(:query) do
           %Ecto.Query{
@@ -691,9 +694,11 @@ defmodule Ecto.Schema do
       contains the same value defined as default, validations will not be performed
       since there are no changes after all.
 
-    * `:source` - Defines the name that is to be used in database for this field.
+    * `:source` - Defines the name that is to be used in the database for this field.
       This is useful when attaching to an existing database. The value should be
-      an atom.
+      an atom. This is a last minute translation before the query goes to the database.
+      All references within your Elixir code must still be to the field name,
+      such as in association foreign keys.
 
     * `:autogenerate` - a `{module, function, args}` tuple for a function
       to call to generate the field value before insertion if value is not set.
@@ -2101,7 +2106,7 @@ defmodule Ecto.Schema do
     # If we are compiling code, we can validate associations now,
     # as the Elixir compiler will solve dependencies.
     #
-    # TODO: Use Code.can_await_module_compilation?/0 from Elixir v1.10+.
+    # TODO: Use Code.can_await_module_compilation?/0 from Elixir v1.11+.
     if Process.info(self(), :error_handler) == {:error_handler, Kernel.ErrorHandler} do
       for name <- module.__schema__(:associations) do
         assoc = module.__schema__(:association, name)

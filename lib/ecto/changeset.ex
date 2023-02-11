@@ -458,11 +458,10 @@ defmodule Ecto.Changeset do
   Returns the empty values used by `Ecto.Changeset`.
 
   By default it marks a field as empty if it is a string made
-  only of whitespace characters. However, a list of can be given
-  to prepend new empty values to the default list.
+  only of whitespace characters.
   """
-  def empty_values(list \\ []) do
-    list ++ @empty_values
+  def empty_values do
+    @empty_values
   end
 
   @doc """
@@ -538,7 +537,7 @@ defmodule Ecto.Changeset do
       # Augmenting default
       iex> params = %{title: "", topics: []}
       iex> changeset =
-      ...>   cast(post, params, [:topics], empty_values: Ecto.Changeset.empty_values([[], nil]))
+      ...>   cast(post, params, [:topics], empty_values: [[], nil] ++ Ecto.Changeset.empty_values())
       iex> changeset.params
       %{}
 
@@ -801,18 +800,26 @@ defmodule Ecto.Changeset do
 
     * If the parameter does not contain an ID, the parameter data
       will be passed to `MyApp.Address.changeset/2` with a new struct
-      and become an insert operation
+      and become an insert operation. We only consider the ID as not
+      given if there is no "id" key or if its value is strictly `nil`
+
     * If the parameter contains an ID and there is no associated child
       with such ID, the parameter data will be passed to
       `MyApp.Address.changeset/2` with a new struct and become an insert
       operation
+
     * If the parameter contains an ID and there is an associated child
       with such ID, the parameter data will be passed to
       `MyApp.Address.changeset/2` with the existing struct and become an
       update operation
+
     * If there is an associated child with an ID and its ID is not given
       as parameter, the `:on_replace` callback for that association will
       be invoked (see the "On replace" section on the module documentation)
+
+  If two or more addresses have the same IDs, Ecto will consider that an
+  error and add an error to the changeset saying that there are duplicate
+  entries.
 
   Every time the `MyApp.Address.changeset/2` function is invoked, it must
   return a changeset. This changeset will always be included under `changes`
