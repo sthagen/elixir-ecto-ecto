@@ -47,7 +47,7 @@ defmodule Ecto.Repo do
       Defaults to `10`
 
     * `:telemetry_prefix` - we recommend adapters to publish events
-      using the `Telemetry` library. By default, the telemetry prefix
+      using the [Telemetry](`:telemetry`) library. By default, the telemetry prefix
       is based on the module name, so if your module is called
       `MyApp.Repo`, the prefix will be `[:my_app, :repo]`. See the
       "Telemetry Events" section to see which events we recommend
@@ -885,7 +885,7 @@ defmodule Ecto.Repo do
 
       # checks if any posts exist in the "private" schema path (in Postgres) or
       # database (in MySQL)
-      Repo.exists?(Post, schema: "private")
+      Repo.exists?(Post, prefix: "private")
 
       # checks if any post with a like count greater than 10 exists
       query = from p in Post, where: p.like_count > 10
