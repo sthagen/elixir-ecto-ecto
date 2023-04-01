@@ -487,7 +487,10 @@ defmodule Ecto.Changeset do
           {:ok, new_value} ->
             case type do
               {tag, relation} when tag in @relations ->
-                if opts != [], do: raise ArgumentError, "invalid options for #{tag} field"
+                if opts != [] do
+                  raise ArgumentError, "invalid options for #{tag} field"
+                end
+
                 relation_changed?(relation.cardinality, new_value)
               _ ->
                 Enum.all?(opts, fn
@@ -560,6 +563,13 @@ defmodule Ecto.Changeset do
     * `:force_changes` - a boolean indicating whether to include values that don't alter
       the current data in `:changes`. Defaults to `false`
 
+    * `:message` - a function of arity 2 that is used to create the error message when
+      casting fails. It is called for every field that cannot be casted and receives the
+      field name as the first argument and the error metadata as the second argument. It
+      must return a string or `nil`. If a string is returned it will be used as the error
+      message. If `nil` is returned the default error message will be used. The field type
+      is given under the `:type` key in the metadata
+
   ## Examples
 
       iex> changeset = cast(post, params, [:title])
@@ -604,6 +614,33 @@ defmodule Ecto.Changeset do
       iex> changeset.params
       %{}
 
+  You can define a custom error message function.
+
+      # Using field name
+      iex> params = %{title: 1, body: 2}
+      iex> custom_errors = [title: "must be a string"]
+      iex> msg_func = fn field, _meta -> custom_errors[field] end
+      iex> changeset = cast(post, params, [:title, :body], message: msg_func)
+      iex> changeset.errors
+      [
+        title: {"must be a string", [type: :string, validation: :cast]},
+        body: {"is_invalid", [type: :string, validation: :cast]}
+      ]
+
+      # Using field type
+      iex> params = %{title: 1, body: 2}
+      iex> custom_errors = [string: "must be a string"]
+      iex> msg_func = fn _field, meta ->
+      ...    type = meta[:type]
+      ...    custom_errors[type]
+      ...  end
+      iex> changeset = cast(post, params, [:title, :body], message: msg_func)
+      iex> changeset.errors
+      [
+        title: {"must be a string", [type: :string, validation: :cast]},
+        body: {"must be a string", [type: :string, validation: :cast]}
+      ]
+
   ## Composing casts
 
   `cast/4` also accepts a changeset as its first argument. In such cases, all
@@ -633,6 +670,7 @@ defmodule Ecto.Changeset do
 
   def cast(%Changeset{changes: changes, data: data, types: types, empty_values: empty_values} = changeset,
                       params, permitted, opts) do
+
     opts =
       cond do
         opts[:empty_values] ->
@@ -669,6 +707,12 @@ defmodule Ecto.Changeset do
     empty_values = Keyword.get(opts, :empty_values, @empty_values)
     force? = Keyword.get(opts, :force_changes, false)
     params = convert_params(params)
+    msg_func = Keyword.get(opts, :message, fn _, _ -> nil end)
+
+    unless is_function(msg_func, 2) do
+      raise ArgumentError,
+            "expected `:message` to be a function of arity 2, received: #{inspect(msg_func)}"
+    end
 
     defaults = case data do
       %{__struct__: struct} -> struct.__struct__()
@@ -677,7 +721,7 @@ defmodule Ecto.Changeset do
 
     {changes, errors, valid?} =
       Enum.reduce(permitted, {changes, [], true},
-                  &process_param(&1, params, types, data, empty_values, defaults, force?, &2))
+                  &process_param(&1, params, types, data, empty_values, defaults, force?, msg_func, &2))
 
     %Changeset{params: params, data: data, valid?: valid?,
                errors: Enum.reverse(errors), changes: changes, types: types}
@@ -688,7 +732,7 @@ defmodule Ecto.Changeset do
                           message: "expected params to be a :map, got: `#{inspect params}`"
   end
 
-  defp process_param(key, params, types, data, empty_values, defaults, force?, {changes, errors, valid?}) do
+  defp process_param(key, params, types, data, empty_values, defaults, force?, msg_func, {changes, errors, valid?}) do
     {key, param_key} = cast_key(key)
     type = cast_type!(types, key)
 
@@ -704,12 +748,19 @@ defmodule Ecto.Changeset do
       :missing ->
         {changes, errors, valid?}
       {:invalid, custom_errors} ->
-        {message, new_errors} =
+        {default_message, metadata} =
           custom_errors
           |> Keyword.put_new(:validation, :cast)
           |> Keyword.put(:type, type)
           |> Keyword.pop(:message, "is invalid")
-        {changes, [{key, {message, new_errors}} | errors], false}
+
+        message =
+          case msg_func.(key, metadata) do
+            nil -> default_message
+            user_message -> user_message
+          end
+
+        {changes, [{key, {message, metadata}} | errors], false}
     end
   end
 
@@ -830,7 +881,7 @@ defmodule Ecto.Changeset do
   once (and not a single element of a many-style association) and receiving
   data external to the application.
 
-  `cast_assoc/3` works matching the records extracted from the database
+  `cast_assoc/3` matches the records extracted from the database
   and compares it with the parameters received from an external source.
   Therefore, it is expected that the data in the changeset has explicitly
   preloaded the association being cast and that all of the IDs exist and
@@ -946,19 +997,97 @@ defmodule Ecto.Changeset do
   The important point for partial changes is that any addresses, which were not
   preloaded won't be changed.
 
+  ## Sorting and deleting from -many collections
+
+  In earlier examples, we passed a -many style association as a list:
+
+      %{"name" => "john doe", "addresses" => [
+        %{"street" => "somewhere", "country" => "brazil", "id" => 1},
+        %{"street" => "elsewhere", "country" => "poland"},
+      ]}
+
+  However, it is also common to pass the addresses as a map, where each
+  key is an integer representing its position:
+
+      %{"name" => "john doe", "addresses" => %{
+        0 => %{"street" => "somewhere", "country" => "brazil", "id" => 1},
+        1 => %{"street" => "elsewhere", "country" => "poland"}
+      }}
+
+  Using indexes becomes specially useful with two supporting options:
+  `:sort_param` and `:drop_param`. These options tell the indexes should
+  be reordered or deleted from the data. For example, if you did:
+
+      cast_embed(changeset, :addresses,
+        sort_param: :addresses_sort,
+        drop_param: :addresses_drop)
+
+  You can now submit this:
+
+      %{"name" => "john doe", "addresses" => %{...}, "addresses_drop" => [0]}
+
+  And now the entry with index 0 will be dropped from the params before casting.
+  Note this requires setting the relevant `:on_replace` option on your
+  associations/embeds definition.
+
+  Similar, for sorting, you could do:
+
+      %{"name" => "john doe", "addresses" => %{...}, "addresses_sort" => [1, 0]}
+
+  And that will internally sort the elements so 1 comes before 0. Note that
+  any index not present in "addresses_sort" will come _before_ any of the
+  sorted indexes. If an index is not found, an empty entry is added in its
+  place.
+
+  For embeds, this guarantees the embeds will be rewritten in the given order.
+  However, for associations, this is not enough. You will have to add a
+  `field :position, :integer` to the schema and then do a post-processing
+  of the association, something like this:
+
+      changeset
+      |> cast_assoc(:children, sort_param: ...)
+      |> copy_children_positions()
+
+      defp copy_children_positions(changeset) do
+        if children = Ecto.Changeset.get_change(changeset, :children) do
+          children
+          |> Enum.with_index(fn child, index ->
+            Ecto.Changeset.put_change(child, :position, index)
+          end)
+          |> then(&Ecto.Changeset.put_change(changeset, :children, &1))
+        else
+          changeset
+        end
+      end
+
+  These parameters can be powerful in certain UIs as it allows you to decouple
+  the sorting and replacement of the data from its representation.
+
   ## Options
 
     * `:required` - if the association is a required field
+
     * `:required_message` - the message on failure, defaults to "can't be blank"
+
     * `:invalid_message` - the message on failure, defaults to "is invalid"
+
     * `:force_update_on_change` - force the parent record to be updated in the
       repository if there is a change, defaults to `true`
+
     * `:with` - the function to build the changeset from params. Defaults to the
       `changeset/2` function of the associated module. It can be changed by passing
       an anonymous function or an MFA tuple.  If using an MFA, the default changeset
       and parameters arguments will be prepended to the given args. For example,
       using `with: {Author, :special_changeset, ["hello"]}` will be invoked as
       `Author.special_changeset(changeset, params, "hello")`
+
+    * `:drop_param` - the parameter name which keeps a list of indexes to drop
+      from the relation parameters
+
+    * `:sort_param` - the parameter name which keeps a list of indexes to sort
+      from the relation parameters. Unknown indexes are considered to be new
+      entries. Non-listed indexes will come before any sorted ones. See
+      `cast_assoc/3` for more information
 
   """
   def cast_assoc(changeset, name, opts \\ []) when is_atom(name) do
@@ -982,16 +1111,29 @@ defmodule Ecto.Changeset do
   ## Options
 
     * `:required` - if the embed is a required field
+
     * `:required_message` - the message on failure, defaults to "can't be blank"
+
     * `:invalid_message` - the message on failure, defaults to "is invalid"
+
     * `:force_update_on_change` - force the parent record to be updated in the
       repository if there is a change, defaults to `true`
+
     * `:with` - the function to build the changeset from params. Defaults to the
       `changeset/2` function of the embedded module. It can be changed by passing
       an anonymous function or an MFA tuple.  If using an MFA, the default changeset
       and parameters arguments will be prepended to the given args. For example,
       using `with: {Author, :special_changeset, ["hello"]}` will be invoked as
       `Author.special_changeset(changeset, params, "hello")`
+
+    * `:drop_param` - the parameter name which keeps a list of indexes to drop
+      from the relation parameters
+
+    * `:sort_param` - the parameter name which keeps a list of indexes to sort
+      from the relation parameters. Unknown indexes are considered to be new
+      entries. Non-listed indexes will come before any sorted ones. See
+      `cast_assoc/3` for more information
+
   """
   def cast_embed(changeset, name, opts \\ []) when is_atom(name) do
     cast_relation(:embed, changeset, name, opts)
@@ -1016,13 +1158,15 @@ defmodule Ecto.Changeset do
         {changeset, false}
       end
 
-    on_cast  = Keyword.get_lazy(opts, :with, fn -> on_cast_default(type, related) end)
+    on_cast = Keyword.get_lazy(opts, :with, fn -> on_cast_default(type, related) end)
     original = Map.get(data, key)
 
     changeset =
-      case Map.fetch(params, param_key) do
-        {:ok, value} ->
-          current  = Relation.load!(data, original)
+      case params do
+        %{^param_key => value} ->
+          current = Relation.load!(data, original)
+          value = cast_params(relation, value, params, opts)
+
           case Relation.cast(relation, data, value, current, on_cast) do
             {:ok, change, relation_valid?} when change != original ->
               valid? = changeset.valid? and relation_valid?
@@ -1040,7 +1184,7 @@ defmodule Ecto.Changeset do
               missing_relation(changeset, key, current, required?, relation, opts)
           end
 
-        :error ->
+        %{} ->
           missing_relation(changeset, key, original, required?, relation, opts)
       end
 
@@ -1048,6 +1192,57 @@ defmodule Ecto.Changeset do
       {type, %{relation | on_cast: on_cast}}
     end
   end
+
+  defp cast_params(%{cardinality: :many}, value, params, opts) when is_map(value) do
+    sort = opts_key_from_params(:sort_param, opts, params)
+    drop = opts_key_from_params(:drop_param, opts, params)
+    drop = if is_list(drop), do: drop, else: []
+
+    {sorted, pending} =
+      if is_list(sort) do
+        Enum.map_reduce(sort -- drop, value, &Map.pop(&2, &1, %{}))
+      else
+        {[], value}
+      end
+
+    sorted ++
+      (pending
+       |> Map.drop(drop)
+       |> Enum.map(&key_as_int/1)
+       |> Enum.sort()
+       |> Enum.map(&elem(&1, 1)))
+  end
+
+  defp cast_params(%{cardinality: :one}, value, _params, opts) do
+    if opts[:sort_param] do
+      raise ArgumentError, ":sort_param not supported for belongs_to/has_one"
+    end
+
+    if opts[:drop_param] do
+      raise ArgumentError, ":drop_param not supported for belongs_to/has_one"
+    end
+
+    value
+  end
+
+  defp cast_params(_relation, value, _params, _opts) do
+    value
+  end
+
+  defp opts_key_from_params(opt, opts, params) do
+    if key = opts[opt] do
+      Map.get(params, Atom.to_string(key), nil)
+    end
+  end
+
+  defp key_as_int({key, val}) when is_binary(key) do
+    case Integer.parse(key) do
+      {key, ""} -> {key, val}
+      _ -> {key, val}
+    end
+  end
+
+  defp key_as_int(key_val), do: key_val
 
   defp on_cast_default(type, module) do
     fn struct, params ->
@@ -1252,10 +1447,13 @@ defmodule Ecto.Changeset do
   then falls back on the data, finally returning `default` if
   no value is available.
 
-  For associations and embeds, this function returns the changeset
-  data with all changes applied. Use  `get_assoc/3`/`get_embed/3`
-  if you want to retrieve the relations as changesets or if you want
-  more fine-grained control.
+  For associations and embeds, this function always returns
+  nil, a struct, or a list of structs. In case of changes,
+  the changeset data will have all data applies. This guarantees
+  a consistent result regardless if changes have been applied
+  or not. Use `get_change/2` or `get_assoc/3`/`get_embed/3`
+  if you want to retrieve the relations as changesets or
+  if you want more fine-grained control.
 
       iex> post = %Post{title: "A title", body: "My body is a cage"}
       iex> changeset = change(post, %{title: "A new title"})
@@ -1433,6 +1631,9 @@ defmodule Ecto.Changeset do
 
   @doc """
   Gets a change or returns a default value.
+
+  For associations and embeds, this function always returns
+  nil, a changeset, or a list of changesets.
 
   ## Examples
 

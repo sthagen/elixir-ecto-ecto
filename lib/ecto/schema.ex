@@ -503,13 +503,13 @@ defmodule Ecto.Schema do
     :default,
     :source,
     :autogenerate,
-    :read_after_writes, 
-    :virtual, 
+    :read_after_writes,
+    :virtual,
     :primary_key,
     :load_in_query,
     :redact,
     :foreign_key,
-    :on_replace, 
+    :on_replace,
     :defaults,
     :type,
     :where,
@@ -683,11 +683,11 @@ defmodule Ecto.Schema do
       The default value is calculated at compilation time, so don't use
       expressions like `DateTime.utc_now` or `Ecto.UUID.generate` as
       they would then be the same for all records: in this scenario you can use
-      the `:autogenerate` option to generate at insertion time. 
+      the `:autogenerate` option to generate at insertion time.
 
       The default value is validated against the field's type at compilation time
-      and it will raise an ArgumentError if there is a type mismatch. If you cannot 
-      infer  the field's type at compilation time, you can use the 
+      and it will raise an ArgumentError if there is a type mismatch. If you cannot
+      infer  the field's type at compilation time, you can use the
       `:skip_default_validation` option on the field to skip validations.
 
       Once a default value is set, if you send changes to the changeset that
@@ -757,30 +757,7 @@ defmodule Ecto.Schema do
   """
   defmacro timestamps(opts \\ []) do
     quote bind_quoted: binding() do
-      timestamps = Keyword.merge(@timestamps_opts, opts)
-
-      type = Keyword.get(timestamps, :type, :naive_datetime)
-      autogen = timestamps[:autogenerate] || {Ecto.Schema, :__timestamps__, [type]}
-
-      inserted_at = Keyword.get(timestamps, :inserted_at, :inserted_at)
-      updated_at = Keyword.get(timestamps, :updated_at, :updated_at)
-
-      if inserted_at do
-        opts = if source = timestamps[:inserted_at_source], do: [source: source], else: []
-        Ecto.Schema.field(inserted_at, type, opts)
-      end
-
-      if updated_at do
-        opts = if source = timestamps[:updated_at_source], do: [source: source], else: []
-        Ecto.Schema.field(updated_at, type, opts)
-        Module.put_attribute(__MODULE__, :ecto_autoupdate, {[updated_at], autogen})
-      end
-
-      with [_ | _] = fields <- Enum.filter([inserted_at, updated_at], & &1) do
-        Module.put_attribute(__MODULE__, :ecto_autogenerate, {fields, autogen})
-      end
-
-      :ok
+      Ecto.Schema.__define_timestamps__(__MODULE__, Keyword.merge(@timestamps_opts, opts))
     end
   end
 
@@ -2000,6 +1977,32 @@ defmodule Ecto.Schema do
 
       Module.put_attribute(mod, :ecto_fields, {name, type})
     end
+  end
+
+  @doc false
+  def __define_timestamps__(mod, timestamps) do
+    type = Keyword.get(timestamps, :type, :naive_datetime)
+    autogen = timestamps[:autogenerate] || {Ecto.Schema, :__timestamps__, [type]}
+
+    inserted_at = Keyword.get(timestamps, :inserted_at, :inserted_at)
+    updated_at = Keyword.get(timestamps, :updated_at, :updated_at)
+
+    if inserted_at do
+      opts = if source = timestamps[:inserted_at_source], do: [source: source], else: []
+      Ecto.Schema.__field__(mod, inserted_at, type, opts)
+    end
+
+    if updated_at do
+      opts = if source = timestamps[:updated_at_source], do: [source: source], else: []
+      Ecto.Schema.__field__(mod, updated_at, type, opts)
+      Module.put_attribute(mod, :ecto_autoupdate, {[updated_at], autogen})
+    end
+
+    with [_ | _] = fields <- Enum.filter([inserted_at, updated_at], & &1) do
+      Module.put_attribute(mod, :ecto_autogenerate, {fields, autogen})
+    end
+
+    :ok
   end
 
   @valid_has_options [:foreign_key, :references, :through, :on_delete, :defaults, :on_replace, :where, :preload_order]
