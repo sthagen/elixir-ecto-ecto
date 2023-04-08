@@ -20,7 +20,7 @@ Queries have also been improved, to support LIMIT WITH TIES as well as materiali
   * [Ecto.Changeset] Add `get_assoc`/`get_embed`
   * [Ecto.Changeset] Add `field_missing?/2`
   * [Ecto.Changeset] Add `changed?/2` and `changed?/3` with predicates support
-  * [Ecto.Changeset] Alow `Regex` to be used in constraint names for exact matches
+  * [Ecto.Changeset] Allow `Regex` to be used in constraint names for exact matches
   * [Ecto.Changeset] Allow `:empty_values` option in `cast/4` to include a function which must return true if the value is empty
   * [Ecto.Changeset] `cast/4` will by default consider strings made only of whitespace characters to be empty
   * [Ecto.Query] Support materialized option in CTEs
@@ -36,6 +36,12 @@ Queries have also been improved, to support LIMIT WITH TIES as well as materiali
   * [Ecto.Changeset] Raise when change provided to `validate_format/4` is not a string
   * [Ecto.Query] Fix bug in `json_extract_path` where maps were not allowed to be nested inside of embeds
   * [Ecto.Schema] Allow inline embeds to overwrite conflicting aliases
+
+## v3.9.5 (2023-03-22)
+
+### Bug fixes
+
+  * [Ecto.Query] Rename `@opaque dynamic` type to `@opaque dynamic_expr` to avoid conflicts with Erlang/OTP 26
 
 ## v3.9.4 (2022-12-21)
 
