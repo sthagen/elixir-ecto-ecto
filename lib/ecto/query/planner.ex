@@ -307,7 +307,7 @@ defmodule Ecto.Query.Planner do
   defp normalize_subquery_select(query, adapter, source?) do
     {schema_or_source, expr, %{select: select} = query} = rewrite_subquery_select_expr(query, source?)
     {expr, _} = prewalk(expr, :select, query, select, 0, adapter)
-    {{:map, types}, fields, _from} = collect_fields(expr, [], :never, query, select.take, true, %{})
+    {{:map, types}, fields, _from} = collect_fields(expr, [], :none, query, select.take, true, %{})
     # types must take into account selected_as/2 aliases so that the correct fields are
     # referenced when the outer query selects the entire subquery
     types = normalize_subquery_types(types, Enum.reverse(fields), query.select.aliases, [])
@@ -322,7 +322,7 @@ defmodule Ecto.Query.Planner do
     Enum.reverse(acc)
   end
 
-  defp normalize_subquery_types([{alias, _} = type | types], [{:selected_as, _, [_, alias]} | fields], select_aliases, acc) do
+  defp normalize_subquery_types([{alias, _} = type | types], [{alias, _} | fields], select_aliases, acc) do
     normalize_subquery_types(types, fields, select_aliases, [type | acc])
   end
 
@@ -343,7 +343,7 @@ defmodule Ecto.Query.Planner do
 
     type =
       case field do
-        {:selected_as, _, [_, select_alias]} -> {select_alias, type_value}
+        {select_alias, _} -> {select_alias, type_value}
         _ -> {source_alias, type_value}
       end
 
@@ -1054,9 +1054,9 @@ defmodule Ecto.Query.Planner do
           {inner_query, counter} = traverse_exprs(inner_query, :all, counter, fun)
 
           # Now compute the fields as keyword lists so we emit AS in Ecto query.
-          %{select: %{expr: expr, take: take}} = inner_query
-          {{:map, types}, fields, _from} = collect_fields(expr, [], :never, inner_query, take, true, %{})
-          fields = cte_fields(Keyword.keys(types), Enum.reverse(fields), inner_query.select.aliases, [])
+          %{select: %{expr: expr, take: take, aliases: aliases}} = inner_query
+          {{:map, types}, fields, _from} = collect_fields(expr, [], :none, inner_query, take, true, %{})
+          fields = cte_fields(Keyword.keys(types), Enum.reverse(fields), aliases)
           inner_query = put_in(inner_query.select.fields, fields)
           {_, inner_query} = pop_in(inner_query.aliases[@parent_as])
 
@@ -1367,22 +1367,17 @@ defmodule Ecto.Query.Planner do
 
     {fields, preprocess, from} =
       case from do
-        {:ok, from_pre, from_expr, from_taken} ->
+        {from_expr, from_source, from_fields} ->
           {assoc_exprs, assoc_fields} = collect_assocs([], [], query, tag, from_take, assocs)
-
-          fields =
-            (from_taken ++ Enum.reverse(assoc_fields, Enum.reverse(fields)))
-            |> normalize_selected_as(select.aliases)
-
-          preprocess = [from_pre | Enum.reverse(assoc_exprs)]
-          {fields, preprocess, {from_tag, from_expr}}
+          fields = from_fields ++ Enum.reverse(assoc_fields, Enum.reverse(fields))
+          preprocess = [from_expr | Enum.reverse(assoc_exprs)]
+          {fields, preprocess, {from_tag, from_source}}
 
         :none when preloads != [] or assocs != [] ->
           error! query, "the binding used in `from` must be selected in `select` when using `preload`"
 
         :none ->
-          fields = fields |> normalize_selected_as(select.aliases) |> Enum.reverse()
-          {fields, [], :none}
+          {Enum.reverse(fields), [], :none}
       end
 
     select = %{
@@ -1396,35 +1391,35 @@ defmodule Ecto.Query.Planner do
     {put_in(query.select.fields, fields), select}
   end
 
-  defp normalize_selected_as(fields, aliases) when aliases == %{}, do: fields
-
-  defp normalize_selected_as(fields, _aliases) do
-    Enum.map(fields, fn
-      {:selected_as, _, [select_expr, name]} -> {name, select_expr}
-      field -> field
-    end)
-  end
-
   # Handling of source
 
-  defp collect_fields({:merge, _, [{:&, _, [0]}, right]}, fields, :none, query, take, keep_literals?, _drop) do
-    {expr, taken} = source_take!(:select, query, take, 0, 0, %{})
-    from = {:ok, {:source, :from}, expr, taken}
+  # The idea of collect_fields is to collect all fields used in select.
+  # However, special care is taken in for `from`. Because `from` is used
+  # earlier in assoc/preloads, any operation done on `from` is separately
+  # collected in the `from` information. Then, everything else refers to
+  # the preprocessed `from` as `{:source, :from}`.
 
-    {right, right_fields, _from} = collect_fields(right, [], from, query, take, keep_literals?, %{})
-    from = {:ok, {:merge, {:source, :from}, right}, expr, taken ++ Enum.reverse(right_fields)}
+  defp collect_fields({:merge, _, [left, right]}, fields, from, query, take, keep_literals?, _drop) do
+    case collect_fields(left, fields, from, query, take, keep_literals?, %{}) do
+      {{:source, :from}, fields, left_from} ->
+        {right, right_fields, _} =
+          collect_fields(right, [], left_from, query, take, keep_literals?, %{})
 
-    {{:source, :from}, fields, from}
+        {from_expr, from_source, from_fields} = left_from
+        from = {{:merge, from_expr, right}, from_source, from_fields ++ Enum.reverse(right_fields)}
+        {{:source, :from}, fields, from}
+
+      {left, left_fields, left_from} ->
+        {right, right_fields, right_from} =
+          collect_fields(right, left_fields, left_from, query, take, keep_literals?, %{})
+
+        {{:merge, left, right}, right_fields, right_from}
+    end
   end
 
   defp collect_fields({:&, _, [0]}, fields, :none, query, take, _keep_literals?, drop) do
     {expr, taken} = source_take!(:select, query, take, 0, 0, drop)
-    {{:source, :from}, fields, {:ok, {:source, :from}, expr, taken}}
-  end
-
-  defp collect_fields({:&, _, [0]}, fields, from, _query, _take, _keep_literals?, _drop)
-       when from != :never do
-    {{:source, :from}, fields, from}
+    {{:source, :from}, fields, {{:source, :from}, expr, taken}}
   end
 
   defp collect_fields({:&, _, [ix]}, fields, from, query, take, _keep_literals?, drop) do
@@ -1523,11 +1518,6 @@ defmodule Ecto.Query.Planner do
     {{:struct, name, args}, fields, from}
   end
 
-  defp collect_fields({:merge, _, args}, fields, from, query, take, keep_literals?, _drop) do
-    {[left, right], fields, from} = collect_args(args, fields, from, query, take, keep_literals?, [])
-    {{:merge, left, right}, fields, from}
-  end
-
   defp collect_fields({:date_add, _, [arg | _]} = expr, fields, from, query, take, keep_literals?, _drop) do
     case collect_fields(arg, fields, from, query, take, keep_literals?, %{}) do
       {{:value, :any}, _, _} -> {{:value, :date}, [expr | fields], from}
@@ -1590,9 +1580,9 @@ defmodule Ecto.Query.Planner do
     {{:value, :boolean}, [expr | fields], from}
   end
 
-  defp collect_fields({:selected_as, _, [select_expr, _name]} = expr, fields, from, query, take, keep_literals?, _drop) do
+  defp collect_fields({:selected_as, _, [select_expr, name]}, fields, from, query, take, keep_literals?, _drop) do
     {type, _, _} = collect_fields(select_expr, fields, from, query, take, keep_literals?, %{})
-    {type, [expr | fields], from}
+    {type, [{name, select_expr} | fields], from}
   end
 
   defp collect_fields(expr, fields, from, _query, _take, _keep_literals?, _drop) do
@@ -1936,12 +1926,11 @@ defmodule Ecto.Query.Planner do
     field
   end
 
-
-  defp cte_fields([key | rest_keys], [{:selected_as, _, [select_expr, key]} | rest_fields], aliases, acc) do
-    cte_fields(rest_keys, rest_fields, aliases, [{key, select_expr} | acc])
+  defp cte_fields([key | rest_keys], [{key, select_expr} | rest_fields], aliases) do
+    [{key, select_expr} | cte_fields(rest_keys, rest_fields, aliases)]
   end
 
-  defp cte_fields([key | rest_keys], [field | rest_fields], aliases, acc) do
+  defp cte_fields([key | rest_keys], [field | rest_fields], aliases) do
     if Map.has_key?(aliases, key) do
       raise ArgumentError,
             "the alias, #{inspect(key)}, provided to `selected_as/2` conflicts" <>
@@ -1952,15 +1941,14 @@ defmodule Ecto.Query.Planner do
 
     {key, field} =
       case field do
-        {:selected_as, _, [select_expr, alias]} -> {alias, select_expr}
+        {alias, select_expr} -> {alias, select_expr}
         field -> {key, field}
       end
 
-    cte_fields(rest_keys, rest_fields, aliases, [{key, field} | acc])
+    [{key, field} | cte_fields(rest_keys, rest_fields, aliases)]
   end
 
-  defp cte_fields(_keys, [], _aliases, acc), do: :lists.reverse(acc)
-  defp cte_fields([], _fields, _aliases, acc), do: :lists.reverse(acc)
+  defp cte_fields([], [], _aliases), do: []
 
   defp assert_update!(%Ecto.Query{updates: updates} = query, operation) do
     changes =

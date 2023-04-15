@@ -521,10 +521,16 @@ defmodule Ecto.Changeset do
   end
 
   @doc """
-  Returns the empty values used by `Ecto.Changeset`.
+  Returns the default empty values used by `Ecto.Changeset`.
 
   By default it marks a field as empty if it is a string made
-  only of whitespace characters.
+  only of whitespace characters. If you want to provide your
+  additional empty values on top of this one, such as an empty
+  list, you can write:
+
+      @empty_values [[]] ++ Ecto.Changeset.empty_values()
+
+  And then pass `empty_values: @empty_values` on `cast/3`.
   """
   def empty_values do
     @empty_values
@@ -1159,33 +1165,34 @@ defmodule Ecto.Changeset do
       end
 
     on_cast = Keyword.get_lazy(opts, :with, fn -> on_cast_default(type, related) end)
-    original = Map.get(data, key)
+    sort = opts_key_from_params(:sort_param, opts, params)
+    drop = opts_key_from_params(:drop_param, opts, params)
 
     changeset =
-      case params do
-        %{^param_key => value} ->
-          current = Relation.load!(data, original)
-          value = cast_params(relation, value, params, opts)
+      if is_map_key(params, param_key) or is_list(sort) or is_list(drop) do
+        value = Map.get(params, param_key)
+        original = Map.get(data, key)
+        current = Relation.load!(data, original)
+        value = cast_params(relation, value, sort, drop)
 
-          case Relation.cast(relation, data, value, current, on_cast) do
-            {:ok, change, relation_valid?} when change != original ->
-              valid? = changeset.valid? and relation_valid?
-              changes = Map.put(changes, key, change)
-              changeset = %{force_update(changeset, opts) | changes: changes, valid?: valid?}
-              missing_relation(changeset, key, current, required?, relation, opts)
+        case Relation.cast(relation, data, value, current, on_cast) do
+          {:ok, change, relation_valid?} when change != original ->
+            valid? = changeset.valid? and relation_valid?
+            changes = Map.put(changes, key, change)
+            changeset = %{force_update(changeset, opts) | changes: changes, valid?: valid?}
+            missing_relation(changeset, key, current, required?, relation, opts)
 
-            {:error, {message, meta}} ->
-              meta = [validation: type] ++ meta
-              error = {key, {message(opts, :invalid_message, message), meta}}
-              %{changeset | errors: [error | changeset.errors], valid?: false}
+          {:error, {message, meta}} ->
+            meta = [validation: type] ++ meta
+            error = {key, {message(opts, :invalid_message, message), meta}}
+            %{changeset | errors: [error | changeset.errors], valid?: false}
 
-            # ignore or ok with change == original
-            _ ->
-              missing_relation(changeset, key, current, required?, relation, opts)
-          end
-
-        %{} ->
-          missing_relation(changeset, key, original, required?, relation, opts)
+          # ignore or ok with change == original
+          _ ->
+            missing_relation(changeset, key, current, required?, relation, opts)
+        end
+      else
+        missing_relation(changeset, key, Map.get(data, key), required?, relation, opts)
       end
 
     update_in changeset.types[key], fn {type, relation} ->
@@ -1193,9 +1200,12 @@ defmodule Ecto.Changeset do
     end
   end
 
-  defp cast_params(%{cardinality: :many}, value, params, opts) when is_map(value) do
-    sort = opts_key_from_params(:sort_param, opts, params)
-    drop = opts_key_from_params(:drop_param, opts, params)
+  defp cast_params(%{cardinality: :many} = relation, nil, sort, drop)
+       when is_list(sort) or is_list(drop) do
+    cast_params(relation, %{}, sort, drop)
+  end
+
+  defp cast_params(%{cardinality: :many}, value, sort, drop) when is_map(value) do
     drop = if is_list(drop), do: drop, else: []
 
     {sorted, pending} =
@@ -1213,19 +1223,19 @@ defmodule Ecto.Changeset do
        |> Enum.map(&elem(&1, 1)))
   end
 
-  defp cast_params(%{cardinality: :one}, value, _params, opts) do
-    if opts[:sort_param] do
+  defp cast_params(%{cardinality: :one}, value, sort, drop) do
+    if sort do
       raise ArgumentError, ":sort_param not supported for belongs_to/has_one"
     end
 
-    if opts[:drop_param] do
+    if drop do
       raise ArgumentError, ":drop_param not supported for belongs_to/has_one"
     end
 
     value
   end
 
-  defp cast_params(_relation, value, _params, _opts) do
+  defp cast_params(_relation, value, _sort, _drop) do
     value
   end
 
@@ -3083,8 +3093,8 @@ defmodule Ecto.Changeset do
 
     if is_nil(current) do
       Logger.warn """
-      the current value of `#{field}` is `nil` and will not be used as a filter for optimistic
-      locking. To ensure `#{field}` is never `nil`, consider setting a default value.
+      the current value of `#{field}` is `nil` and will not be used as a filter for optimistic locking. \
+      To ensure `#{field}` is never `nil`, consider setting a default value.
       """
       changeset
     else
