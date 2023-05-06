@@ -1047,24 +1047,19 @@ defmodule Ecto.Changeset do
 
   For embeds, this guarantees the embeds will be rewritten in the given order.
   However, for associations, this is not enough. You will have to add a
-  `field :position, :integer` to the schema and then do a post-processing
-  of the association, something like this:
+  `field :position, :integer` to the schema and add a with function of arity 3
+  to add the position to your children changeset. For example, you could implement:
+
+      defp child_changeset(child, _changes, position) do
+        child
+        |> put_change(:position, position)
+      end
+
+  And by passing it to `:with`, it will be called with the final position of the
+  item:
 
       changeset
-      |> cast_assoc(:children, sort_param: ...)
-      |> copy_children_positions()
-
-      defp copy_children_positions(changeset) do
-        if children = Ecto.Changeset.get_change(changeset, :children) do
-          children
-          |> Enum.with_index(fn child, index ->
-            Ecto.Changeset.put_change(child, :position, index)
-          end)
-          |> then(&Ecto.Changeset.put_change(changeset, :children, &1))
-        else
-          changeset
-        end
-      end
+      |> cast_assoc(:children, sort_param: ..., with: &child_changeset/3)
 
   These parameters can be powerful in certain UIs as it allows you to decouple
   the sorting and replacement of the data from its representation.
@@ -1081,11 +1076,11 @@ defmodule Ecto.Changeset do
       repository if there is a change, defaults to `true`
 
     * `:with` - the function to build the changeset from params. Defaults to the
-      `changeset/2` function of the associated module. It can be changed by passing
-      an anonymous function or an MFA tuple.  If using an MFA, the default changeset
-      and parameters arguments will be prepended to the given args. For example,
-      using `with: {Author, :special_changeset, ["hello"]}` will be invoked as
-      `Author.special_changeset(changeset, params, "hello")`
+      `changeset/2` function of the associated module. It can be an anonymous
+      function that expects two arguments, a changeset to be modified and its
+      parameters. For associations with cardinality `:many`, functions with arity
+      3 are accepted, and the third argument will be the position of the associated
+      element in the list, or `nil`, if the changeset is being replaced.
 
     * `:drop_param` - the parameter name which keeps a list of indexes to drop
       from the relation parameters
@@ -1126,11 +1121,11 @@ defmodule Ecto.Changeset do
       repository if there is a change, defaults to `true`
 
     * `:with` - the function to build the changeset from params. Defaults to the
-      `changeset/2` function of the embedded module. It can be changed by passing
-      an anonymous function or an MFA tuple.  If using an MFA, the default changeset
-      and parameters arguments will be prepended to the given args. For example,
-      using `with: {Author, :special_changeset, ["hello"]}` will be invoked as
-      `Author.special_changeset(changeset, params, "hello")`
+      `changeset/2` function of the associated module. It must be an anonymous
+      function that expects two arguments, a changeset to be modified and its
+      parameters. For associations with cardinality `:many`, functions with arity
+      3 are accepted, and the third argument will be the position of the associated
+      element in the list, or `nil`, if the changeset is being replaced.
 
     * `:drop_param` - the parameter name which keeps a list of indexes to drop
       from the relation parameters
@@ -1269,7 +1264,8 @@ defmodule Ecto.Changeset do
 
                 1. implement the #{type}.changeset/2 function
                 2. pass the :with option to cast_#{type}/3 with an anonymous
-                   function that expects 2 args or an MFA tuple
+                   function of arity 2 (or possibly arity 3, if using has_many or
+                   embeds_many)
 
               When using an inline embed, the :with option must be given
               """
@@ -2732,7 +2728,7 @@ defmodule Ecto.Changeset do
         * "should be %{count} byte(s)"
         * "should be at least %{count} byte(s)"
         * "should be at most %{count} byte(s)"
-      * for lists:
+      * for lists and maps:
         * "should have %{count} item(s)"
         * "should have at least %{count} item(s)"
         * "should have at most %{count} item(s)"
@@ -2761,6 +2757,8 @@ defmodule Ecto.Changeset do
             {:binary, byte_size(value)}
           {value, _} when is_list(value) ->
             {:list, list_length(changeset, field, value)}
+          {value, _} when is_map(value) ->
+            {:map, map_size(value)}
         end
 
         error = ((is = opts[:is]) && wrong_length(type, length, is, opts)) ||
@@ -2791,6 +2789,8 @@ defmodule Ecto.Changeset do
     {message(opts, "should be %{count} byte(s)"), count: value, validation: :length, kind: :is, type: :binary}
   defp wrong_length(:list, _length, value, opts), do:
     {message(opts, "should have %{count} item(s)"), count: value, validation: :length, kind: :is, type: :list}
+  defp wrong_length(:map, _length, value, opts), do:
+    {message(opts, "should have %{count} item(s)"), count: value, validation: :length, kind: :is, type: :map}
 
   defp too_short(_type, length, value, _opts) when length >= value, do: nil
   defp too_short(:string, _length, value, opts), do:
@@ -2799,6 +2799,8 @@ defmodule Ecto.Changeset do
     {message(opts, "should be at least %{count} byte(s)"), count: value, validation: :length, kind: :min, type: :binary}
   defp too_short(:list, _length, value, opts), do:
     {message(opts, "should have at least %{count} item(s)"), count: value, validation: :length, kind: :min, type: :list}
+  defp too_short(:map, _length, value, opts), do:
+    {message(opts, "should have at least %{count} item(s)"), count: value, validation: :length, kind: :min, type: :map}
 
   defp too_long(_type, length, value, _opts) when length <= value, do: nil
   defp too_long(:string, _length, value, opts), do:
@@ -2807,6 +2809,8 @@ defmodule Ecto.Changeset do
     {message(opts, "should be at most %{count} byte(s)"), count: value, validation: :length, kind: :max, type: :binary}
   defp too_long(:list, _length, value, opts), do:
     {message(opts, "should have at most %{count} item(s)"), count: value, validation: :length, kind: :max, type: :list}
+  defp too_long(:map, _length, value, opts), do:
+    {message(opts, "should have at most %{count} item(s)"), count: value, validation: :length, kind: :max, type: :map}
 
   @doc """
   Validates the properties of a number.
