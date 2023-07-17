@@ -78,7 +78,7 @@ defmodule Ecto.Query.Builder.OrderByTest do
     end
 
     test "raises if name given to selected_as/1 is not an atom" do
-      message = "selected_as/1 expects `name` to be an atom, got `\"ident\"`"
+      message = "expected literal atom or interpolated value in selected_as/1, got: `\"ident\"`"
 
       assert_raise Ecto.Query.CompileError, message, fn ->
         escape(:order_by, quote do selected_as("ident") end, {[], %{}}, [], __ENV__)
@@ -86,6 +86,36 @@ defmodule Ecto.Query.Builder.OrderByTest do
 
       assert_raise Ecto.Query.CompileError, message, fn ->
         escape(:order_by, quote do [desc: selected_as("ident")] end, {[], %{}}, [], __ENV__)
+      end
+    end
+
+    test "accepts :mode option" do
+      query = order_by("q", [q], [:title])
+      opts = [mode: :prepend]
+      %{order_bys: prepend_order_bys} = order_by(query, [q], [:prepend], opts)
+      %{order_bys: append_order_bys} = order_by(query, [q], [:append], mode: :append)
+      %{order_bys: default_order_bys} = order_by(query, [q], [:append])
+
+      assert [
+               %{expr: [asc: {{:., _, [_, :prepend]}, _, _}]},
+               %{expr: [asc: {{:., _, [_, :title]}, _, _}]}
+             ] = prepend_order_bys
+
+      assert [
+               %{expr: [asc: {{:., _, [_, :title]}, _, _}]},
+               %{expr: [asc: {{:., _, [_, :append]}, _, _}]}
+             ] = append_order_bys
+
+      assert [
+               %{expr: [asc: {{:., _, [_, :title]}, _, _}]},
+               %{expr: [asc: {{:., _, [_, :append]}, _, _}]}
+             ] = default_order_bys
+
+
+      error_msg = "expected `:mode` to be `:append` or `:prepend`, got: :invalid"
+
+      assert_raise ArgumentError, error_msg, fn ->
+        order_by(query, [q], [:invalid], mode: :invalid)
       end
     end
   end
@@ -100,6 +130,36 @@ defmodule Ecto.Query.Builder.OrderByTest do
       assert order_by("q", [q], [{^dir, ^key}]).order_bys == order_by("q", [q], [desc: q.title]).order_bys
     end
 
+    test "accepts :mode option" do
+      query = order_by("q", [q], [:title])
+      opts = [mode: :prepend]
+      %{order_bys: prepend_order_bys} = order_by(query, [q], ^[:prepend], opts)
+      %{order_bys: append_order_bys} = order_by(query, [q], ^[:append], mode: :append)
+      %{order_bys: default_order_bys} = order_by(query, [q], ^[:append])
+
+      assert [
+               %{expr: [asc: {{:., _, [_, :prepend]}, _, _}]},
+               %{expr: [asc: {{:., _, [_, :title]}, _, _}]}
+             ] = prepend_order_bys
+
+      assert [
+               %{expr: [asc: {{:., _, [_, :title]}, _, _}]},
+               %{expr: [asc: {{:., _, [_, :append]}, _, _}]}
+             ] = append_order_bys
+
+      assert [
+               %{expr: [asc: {{:., _, [_, :title]}, _, _}]},
+               %{expr: [asc: {{:., _, [_, :append]}, _, _}]}
+             ] = default_order_bys
+
+
+      error_msg = "expected `:mode` to be `:append` or `:prepend`, got: :invalid"
+
+      assert_raise ArgumentError, error_msg, fn ->
+        order_by(query, [q], ^[:invalid], mode: :invalid)
+      end
+    end
+
     test "supports dynamic expressions" do
       order_by = [
         asc: dynamic([p], p.foo == ^1 and p.bar == ^"bar"),
@@ -112,6 +172,17 @@ defmodule Ecto.Query.Builder.OrderByTest do
              "[asc: &0.foo() == ^0 and &0.bar() == ^1, desc: &0.bar(), asc: &0.baz() == ^2 and &0.bat() == ^3]"
       assert order_by.params ==
              [{1, {0, :foo}}, {"bar", {0, :bar}}, {2, {0, :baz}}, {"bat", {0, :bat}}]
+    end
+
+    test "supports interpolated atomnames in selected_as/1" do
+      query = from p in "posts", select: selected_as(p.id, :ident), order_by: selected_as(^:ident)
+      assert [asc: {:selected_as, [], [:ident]}] = hd(query.order_bys).expr
+
+      message = "expected atom in selected_as/1, got: `\"ident\"`"
+
+      assert_raise Ecto.Query.CompileError, message, fn ->
+        from p in "posts", select: selected_as(p.id, :ident), order_by: selected_as(^"ident")
+      end
     end
 
     test "raises on invalid direction" do

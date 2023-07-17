@@ -74,8 +74,8 @@ defmodule Ecto.Query.Builder do
   with `^index` in the query where index is a number indexing into the
   map.
   """
-  @spec escape(Macro.t, quoted_type | {:in, quoted_type} | {:out, quoted_type}, {list, acc},
-               Keyword.t, Macro.Env.t | {Macro.Env.t, fun}) :: {Macro.t, {list, acc}}
+  @spec escape(Macro.t, quoted_type | {:in, quoted_type} | {:out, quoted_type} | {:splice, quoted_type},
+               {list, acc}, Keyword.t, Macro.Env.t | {Macro.Env.t, fun}) :: {Macro.t, {list, acc}}
   def escape(expr, type, params_acc, vars, env)
 
   # var.x - where var is bound
@@ -416,13 +416,10 @@ defmodule Ecto.Query.Builder do
     """
   end
 
-  def escape({:selected_as, _, [name]}, _type, params_acc, _vars, _env) when is_atom(name) do
+  def escape({:selected_as, _, [name]}, _type, params_acc, _vars, _env) do
+    name = quoted_atom!(name, "selected_as/1")
     expr = {:{}, [], [:selected_as, [], [name]]}
     {expr, params_acc}
-  end
-
-  def escape({:selected_as, _, [name]}, _type, _params_acc, _vars, _env) do
-    error! "selected_as/1 expects `name` to be an atom, got `#{inspect(name)}`"
   end
 
   def escape({quantifier, meta, [subquery]}, type, params_acc, vars, env) when quantifier in [:all, :any, :exists] do
@@ -691,6 +688,20 @@ defmodule Ecto.Query.Builder do
 
       _ ->
         error! "literal/1 in fragment expects an interpolated value, such as literal(^value), got `#{Macro.to_string(expr)}`"
+    end
+  end
+
+  defp escape_fragment({:splice, _meta, [splice]}, params_acc, vars, env) do
+    case splice do
+      {:^, _, [value]} = expr ->
+        checked = quote do: Ecto.Query.Builder.splice!(unquote(value))
+        length = quote do: length(unquote(checked))
+        {expr, params_acc} = escape(expr, {:splice, :any}, params_acc, vars, env)
+        escaped =  {:{}, [], [:splice, [], [expr, length]]}
+        {escaped, params_acc}
+
+      _ ->
+        error! "splice/1 in fragment expects an interpolated value, such as splice(^value), got `#{Macro.to_string(splice)}`"
     end
   end
 
@@ -1085,6 +1096,18 @@ defmodule Ecto.Query.Builder do
   end
 
   @doc """
+  Called by escaper at runtime to verify splice in fragments.
+  """
+  def splice!(value) do
+    if is_list(value) do
+      value
+    else
+      raise ArgumentError,
+            "splice(^value) expects `value` to be a list, got `#{inspect(value)}`"
+    end
+  end
+
+  @doc """
   Called by escaper at runtime to verify that value is a valid interval.
   """
   @interval ~w(year month week day hour minute second millisecond microsecond)
@@ -1246,7 +1269,7 @@ defmodule Ecto.Query.Builder do
   @doc """
   Called by the select escaper at compile time and dynamic builder at runtime to track select aliases
   """
-  def add_select_alias(aliases, name) do
+  def add_select_alias(aliases, name) when is_map(aliases) and is_atom(name) do
     case aliases do
       %{^name => _} ->
         error! "the alias `#{inspect(name)}` has been specified more than once using `selected_as/2`"
@@ -1254,6 +1277,16 @@ defmodule Ecto.Query.Builder do
       aliases ->
         Map.put(aliases, name, @select_alias_dummy_value)
     end
+  end
+
+  def add_select_alias(aliases, name) do
+    aliases =
+      case aliases do
+        %{} -> Macro.escape(aliases)
+        aliases -> aliases
+      end
+
+    quote do: Ecto.Query.Builder.add_select_alias(unquote(aliases), unquote(name))
   end
 
   @doc """

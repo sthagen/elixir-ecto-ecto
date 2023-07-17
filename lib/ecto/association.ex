@@ -503,6 +503,10 @@ defmodule Ecto.Association do
   @doc """
   Validates `preload_order` for association named `name`.
   """
+  def validate_preload_order!(_name, {mod, fun, args} = preload_order)
+      when is_atom(mod) and is_atom(fun) and is_list(args),
+      do: preload_order
+
   def validate_preload_order!(name, preload_order) when is_list(preload_order) do
     Enum.map(preload_order, fn
       field when is_atom(field) ->
@@ -528,8 +532,8 @@ defmodule Ecto.Association do
 
   def validate_preload_order!(name, preload_order) do
     raise ArgumentError,
-          "expected `:preload_order` for #{inspect(name)} to be a keyword list or a list of atoms/fields, " <>
-            "got: `#{inspect(preload_order)}`"
+          "expected `:preload_order` for #{inspect(name)} to be a keyword list, a list of atoms/fields " <>
+            "or a {Mod, fun, args} tuple, got: `#{inspect(preload_order)}`"
   end
 
   @doc """
@@ -996,7 +1000,14 @@ defmodule Ecto.Association.Has do
          parent
        ) do
     if value = Map.get(parent, owner_key) do
-      from x in queryable, where: field(x, ^related_key) == ^value
+      query = from x in queryable, where: field(x, ^related_key) == ^value
+
+      parent
+      |> Ecto.get_meta(:prefix)
+      |> case do
+        nil -> query
+        prefix -> Ecto.Query.put_query_prefix(query, prefix)
+      end
     end
   end
 end
@@ -1311,6 +1322,7 @@ defmodule Ecto.Association.ManyToMany do
   @behaviour Ecto.Association
   @on_delete_opts [:nothing, :delete_all]
   @on_replace_opts [:raise, :mark_as_invalid, :delete]
+
   defstruct [
     :field,
     :owner,

@@ -99,6 +99,11 @@ defmodule Ecto.Repo do
     * `:telemetry_options` - Extra options to attach to telemetry event name.
       See the next section for more information
 
+  ## Adapter-Specific Errors
+
+  Many of the functions in this module may raise adapter-specific errors, such as `PostgrexError`.
+  This can happen, for example, when the underlying database cannot execute the specified query.
+
   ## Telemetry events
 
   There are two types of telemetry events. The ones emitted by Ecto and the
@@ -2100,7 +2105,7 @@ defmodule Ecto.Repo do
   @callback transaction(fun_or_multi :: fun | Ecto.Multi.t(), opts :: Keyword.t()) ::
               {:ok, any}
               | {:error, any}
-              | {:error, Ecto.Multi.name(), any, %{Ecto.Multi.name() => any}}
+              | Ecto.Multi.failure()
 
   @doc """
   Returns true if the current process is inside a transaction.
