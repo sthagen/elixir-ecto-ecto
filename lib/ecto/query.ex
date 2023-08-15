@@ -761,8 +761,12 @@ defmodule Ecto.Query do
   If any other value is given, it is converted to a query via
   `Ecto.Queryable` and wrapped in the `Ecto.SubQuery` struct.
 
-  `subquery` is supported in `from`, `join`, and `where`, in the
-  form `p.x in subquery(q)`.
+  `subquery` is supported in:
+
+    * `from`,
+    * `join`,
+    * `where`, in the form `p.x in subquery(q)`,
+    * `select` and `select_merge`, in the form of `%{field: subquery(...)}`.
 
   ## Examples
 
@@ -809,6 +813,11 @@ defmodule Ecto.Query do
 
   If you need to refer to a parent binding which is not known when writing the subquery,
   you can use `parent_as` as shown in the examples under "Named bindings" in this module doc.
+
+  You can also use subquery directly in `select` and `select_merge`:
+
+      comments_count = from(c in Comment, where: c.post_id == parent_as(:post).id, select: count())
+      from(p in Post, as: :post, select: %{id: p.id, comments: subquery(comments_count)})
   """
   def subquery(query, opts \\ []) do
     subquery = wrap_in_subquery(query)
@@ -939,6 +948,36 @@ defmodule Ecto.Query do
   a value that implements the `Ecto.Queryable` protocol
   and the second argument the expression.
 
+  ## Hints
+
+  The `hints` keyword can be used to specify query hints:
+
+      from p in Post,
+        hints: ["USE INDEX FOO"],
+        where: p.title == "title"
+
+  It can also be used as a general mechanism for adding statements that
+  come after the `from` clause. For example, it can be used to enable
+  table sampling:
+
+      from p in Post,
+        hints: "TABLESAMPLE SYSTEM(1)"
+
+  `from` hints must be a (list of) compile-time strings or unsafe fragments. An unsafe
+  fragment can be used to specify dynamic hints:
+
+      sample = "SYSTEM_ROWS(1)"
+
+      from p in Post,
+        hints: ["TABLESAMPLE", unsafe_fragment(^sample)]
+
+  > ### Unsafe Fragments {: .warning}
+  >
+  > The output of `unsafe_fragment/1` will be injected directly into the
+  > resulting SQL statement without being escaped. For this reason, input
+  > from uncontrolled sources, such as user input, should **never** be used.
+  > Otherwise, it could lead to harmful SQL injection attacks.
+
   ## Keywords examples
 
       # `in` expression
@@ -948,7 +987,7 @@ defmodule Ecto.Query do
       from(City, limit: 1)
 
       # Fragment with user-defined function and predefined columns
-      from(f in fragment("my_table_valued_function(arg)"), select: f.x))
+      from(f in fragment("my_table_valued_function(arg)"), select: f.x)
 
       # Fragment with built-in function and undefined columns
       from(f in fragment("select generate_series(?::integer, ?::integer) as x", ^0, ^10), select: f.x)
@@ -1272,7 +1311,7 @@ defmodule Ecto.Query do
 
   ## Hints
 
-  `from` and `join` also support index hints, as found in databases such as
+  `join` also supports table hints, as found in databases such as
   [MySQL](https://dev.mysql.com/doc/refman/8.0/en/index-hints.html),
   [MSSQL](https://docs.microsoft.com/en-us/sql/t-sql/queries/hints-transact-sql-table?view=sql-server-2017) and
   [Clickhouse](https://clickhouse.tech/docs/en/sql-reference/statements/select/sample/).
@@ -1288,12 +1327,7 @@ defmodule Ecto.Query do
   Keep in mind you want to use hints rarely, so don't forget to read the database
   disclaimers about such functionality.
 
-  Hints must be static compile-time strings when they are specified as (list of) strings.
-  Certain Ecto adapters may also accept dynamic hints using the tuple form:
-
-      from e in Event,
-        hints: [sample: sample_threshold()],
-        select: e
+  Join hints must be static compile-time strings when they are specified as (list of) strings.
 
   ## Array joins
 
@@ -1847,6 +1881,12 @@ defmodule Ecto.Query do
   Combines result sets of multiple queries. The `select` of each query
   must be exactly the same, with the same types in the same order.
 
+  > ### Selecting literal atoms {: .warning}
+  >
+  > When selecting a literal atom, its value must be the same across
+  > all queries. Otherwise, the value from the parent query will be
+  > applied to all other queries.
+
   Union expression returns only unique rows as if each query returned
   distinct results. This may cause a performance penalty. If you need
   to combine multiple result sets without removing duplicate rows
@@ -1893,6 +1933,12 @@ defmodule Ecto.Query do
   Combines result sets of multiple queries. The `select` of each query
   must be exactly the same, with the same types in the same order.
 
+  > ### Selecting literal atoms {: .warning}
+  >
+  > When selecting a literal atom, its value must be the same across
+  > all queries. Otherwise, the value from the parent query will be
+  > applied to all other queries.
+
   Note that the operations `order_by`, `limit` and `offset` of the
   current `query` apply to the result of the union. `order_by` must
   be specified in one of the following ways, since the union of two
@@ -1933,6 +1979,12 @@ defmodule Ecto.Query do
   Takes the difference of the result sets of multiple queries. The
   `select` of each query must be exactly the same, with the same
   types in the same order.
+
+  > ### Selecting literal atoms {: .warning}
+  >
+  > When selecting a literal atom, its value must be the same across
+  > all queries. Otherwise, the value from the parent query will be
+  > applied to all other queries.
 
   Except expression returns only unique rows as if each query returned
   distinct results. This may cause a performance penalty. If you need
@@ -1980,6 +2032,12 @@ defmodule Ecto.Query do
   `select` of each query must be exactly the same, with the same
   types in the same order.
 
+  > ### Selecting literal atoms {: .warning}
+  >
+  > When selecting a literal atom, its value must be the same across
+  > all queries. Otherwise, the value from the parent query will be
+  > applied to all other queries.
+
   Note that the operations `order_by`, `limit` and `offset` of the
   current `query` apply to the result of the set difference. `order_by`
   must be specified in one of the following ways, since the set difference
@@ -2020,6 +2078,12 @@ defmodule Ecto.Query do
   Takes the overlap of the result sets of multiple queries. The
   `select` of each query must be exactly the same, with the same
   types in the same order.
+
+  > ### Selecting literal atoms {: .warning}
+  >
+  > When selecting a literal atom, its value must be the same across
+  > all queries. Otherwise, the value from the parent query will be
+  > applied to all other queries.
 
   Intersect expression returns only unique rows as if each query returned
   distinct results. This may cause a performance penalty. If you need
@@ -2066,6 +2130,12 @@ defmodule Ecto.Query do
   Takes the overlap of the result sets of multiple queries. The
   `select` of each query must be exactly the same, with the same
   types in the same order.
+
+  > ### Selecting literal atoms {: .warning}
+  >
+  > When selecting a literal atom, its value must be the same across
+  > all queries. Otherwise, the value from the parent query will be
+  > applied to all other queries.
 
   Note that the operations `order_by`, `limit` and `offset` of the
   current `query` apply to the result of the set difference. `order_by`
