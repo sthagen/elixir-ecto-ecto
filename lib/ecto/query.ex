@@ -476,6 +476,59 @@ defmodule Ecto.Query do
     defstruct [:tag, :type, :value]
   end
 
+  defmodule Values do
+    @moduledoc false
+    defstruct [:types, :num_rows, :params]
+
+    def new(values_list, types) do
+      fields = fields(values_list)
+      types = types!(fields, types)
+      params = params!(values_list, types)
+      %__MODULE__{types: types, params: params, num_rows: length(values_list)}
+    end
+
+    defp fields(values_list) do
+      fields =
+        Enum.reduce(values_list, MapSet.new(), fn values, fields ->
+          Enum.reduce(values, fields, fn {field, _}, fields ->
+            MapSet.put(fields, field)
+          end)
+        end)
+
+      MapSet.to_list(fields)
+    end
+
+    defp types!(fields, types) do
+      Enum.map(fields, fn field ->
+        case types do
+          %{^field => type} ->
+            {field, type}
+
+          _ ->
+            raise ArgumentError,
+                  "values/2 must declare the type for every field. " <>
+                    "The type was not given for field `#{field}`"
+        end
+      end)
+    end
+
+    defp params!(values_list, types) do
+      Enum.reduce(values_list, [], fn values, params ->
+        Enum.reduce(types, params, fn {field, type}, params ->
+          case values do
+            %{^field => value} ->
+              [{value, type} | params]
+
+            _ ->
+              raise ArgumentError,
+                    "each member of a values list must have the same fields. " <>
+                      "Missing field `#{field}` in #{inspect(values)}"
+          end
+        end)
+      end)
+    end
+  end
+
   @type t :: %__MODULE__{}
   @opaque dynamic_expr :: %DynamicExpr{}
 
@@ -736,7 +789,7 @@ defmodule Ecto.Query do
 
       windows: [ordered_names: [order_by: e.name]]
 
-  It works exactly as the keyword query version of `order_by/4`.
+  It works exactly as the keyword query version of `order_by/3`.
 
   ### :frame
 
@@ -1809,19 +1862,11 @@ defmodule Ecto.Query do
   "nulls first" or "nulls last" is specific to each database implementation.
 
   `order_by` may be invoked or listed in a query many times. New expressions
-  can be appended or preprended to the existing ones. The behaviour is controlled
-  through the `:mode` option. By default, new expressions are appended.
+  are appended to the existing ones.
 
   `order_by` also accepts a list of atoms where each atom refers to a field in
   source or a keyword list where the direction is given as key and the field
   to order as value.
-
-  ## Options
-
-    * `:mode` - where to place the order expression relative to the
-      ones that already exist. Can be `:append`, to place it after the
-      current orderings, or `:prepend`, to place it before the current
-      orderings. Defaults to `:append`
 
   ## Keywords examples
 
@@ -1871,8 +1916,15 @@ defmodule Ecto.Query do
       City |> order_by(^order_by_param) # Keyword list
 
   """
-  defmacro order_by(query, binding \\ [], expr, opts \\ []) do
-    Builder.OrderBy.build(query, binding, expr, opts, __CALLER__)
+  defmacro order_by(query, binding \\ [], expr) do
+    Builder.OrderBy.build(query, binding, expr, :append, __CALLER__)
+  end
+
+  @doc """
+  Same as `order_by/3` except new expressions will be prepended to existing ones.
+  """
+  defmacro prepend_order_by(query, binding \\ [], expr) do
+    Builder.OrderBy.build(query, binding, expr, :prepend, __CALLER__)
   end
 
   @doc """
@@ -2489,6 +2541,17 @@ defmodule Ecto.Query do
 
       posts_query = from p in Post, where: p.state == :published
       Repo.all from a in Author, preload: [posts: ^{posts_query, [:comments]}]
+
+  If you prefer, you can also add additional preloads directly in the
+  `posts_query`:
+
+      posts_query =
+        from p in Post, where: p.state == :published, preload: :related_posts
+
+  The same can be written as pipe based query:
+
+      posts_query =
+        Post |> where([p], p.state == :published) |> preload(:related_posts)
 
   Note: keep in mind operations like limit and offset in the preload
   query will affect the whole result set and not each association. For

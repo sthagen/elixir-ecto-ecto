@@ -413,6 +413,7 @@ defmodule Ecto.Type do
   def type({:parameterized, type, params}), do: type.type(params)
   def type({:array, type}), do: {:array, type(type)}
   def type({:map, type}), do: {:map, type(type)}
+  def type({:maybe, type}), do: type(type)
   def type(type) when type in @base, do: type
   def type(type) when is_atom(type), do: type.type()
   def type(type), do: type
@@ -759,6 +760,13 @@ defmodule Ecto.Type do
       :error
       iex> cast(:string, [1, 2, 3])
       :error
+
+      iex> cast(:utc_datetime, "2014-04-17T14:00:00Z")
+      {:ok, ~U[2014-04-17 14:00:00Z]}
+      iex> cast(:utc_datetime, "2014-04-17T14:00:00.030Z")
+      {:ok, ~U[2014-04-17 14:00:00Z]}
+      iex> cast(:utc_datetime, "2014-04-17T12:00:00-02:00")
+      {:ok, ~U[2014-04-17 14:00:00Z]}
 
   """
   @spec cast(t, term) :: {:ok, term} | {:error, keyword()} | :error
