@@ -36,6 +36,11 @@ defmodule Ecto.RepoTest do
 
     embedded_schema do
       field :x, :string
+      field :y, :string
+    end
+
+    def changeset(struct, params) do
+      Ecto.Changeset.cast(struct, params, [:x])
     end
   end
 
@@ -131,7 +136,7 @@ defmodule Ecto.RepoTest do
 
     schema "my_schema" do
       field :x, :string
-      embeds_many :embeds, MyEmbed
+      embeds_many :embeds, MyEmbed, on_replace: :delete
     end
   end
 
@@ -520,6 +525,18 @@ defmodule Ecto.RepoTest do
       assert_received {:update, %{source: "my_schema", returning: [:parent_id, :n, :id]}}
       TestRepo.update(changeset, returning: false)
       assert_received {:update, %{source: "my_schema", returning: []}}
+    end
+
+    test "on delete" do
+      changeset = Ecto.Changeset.change(%MySchemaWithAssoc{id: 1}, %{n: 2})
+      TestRepo.delete(changeset, returning: [:id])
+      assert_received {:delete, %{source: "my_schema", returning: [:id]}}
+      TestRepo.delete(changeset, returning: [:parent_id])
+      assert_received {:delete, %{source: "my_schema", returning: [:parent_id]}}
+      TestRepo.delete(changeset, returning: true)
+      assert_received {:delete, %{source: "my_schema", returning: [:parent_id, :n, :id]}}
+      TestRepo.delete(changeset, returning: false)
+      assert_received {:delete, %{source: "my_schema", returning: []}}
     end
   end
 
@@ -1195,6 +1212,30 @@ defmodule Ecto.RepoTest do
       assert_raise ArgumentError, ~r/giving a struct to .* is not supported/, fn ->
         TestRepo.insert_or_update %MySchema{}
       end
+    end
+
+    test "insert surfaces embed fields" do
+      # embeds_one
+      inserted =
+        %MySchemaEmbedsOne{embed: %MyEmbed{x: "old_x", y: "old_y"}}
+        |> Ecto.Changeset.cast(%{embed: %{x: "new_x"}}, [])
+        |> Ecto.Changeset.cast_embed(:embed)
+        |> TestRepo.insert!()
+
+      assert %{x: "new_x", y: "old_y"} = inserted.embed
+
+      # embeds_many
+      data_embed1 = %MyEmbed{id: 1, x: "old_x_1", y: "old_y_1"}
+      data_embed2 = %MyEmbed{id: 2, x: "old_x_2"}
+
+      inserted =
+        %MySchemaEmbedsMany{embeds: [data_embed1, data_embed2]}
+        |> Ecto.Changeset.cast(%{embeds: [%{id: 1, x: "new_x_1"}, %{}]}, [])
+        |> Ecto.Changeset.cast_embed(:embeds)
+        |> TestRepo.insert!()
+
+      assert [%{id: 1, x: "new_x_1", y: "old_y_1"}, %{id: new_id, x: nil}] = inserted.embeds
+      assert new_id != data_embed2.id
     end
   end
 
