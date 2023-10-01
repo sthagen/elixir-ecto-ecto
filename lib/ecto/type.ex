@@ -858,8 +858,6 @@ defmodule Ecto.Type do
 
   defp cast_decimal(term) when is_binary(term) do
     case Decimal.parse(term) do
-      {:ok, decimal} -> check_decimal(decimal, false)
-      # The following two clauses exist to support earlier versions of Decimal.
       {decimal, ""} -> check_decimal(decimal, false)
       {_, remainder} when is_binary(remainder) and byte_size(remainder) > 0 -> :error
       :error -> :error
@@ -917,10 +915,6 @@ defmodule Ecto.Type do
   end
 
   @doc false
-  def adapter_load(adapter, {:parameterized, module, params} = type, value) do
-    process_loaders(adapter.loaders(module.type(params), type), {:ok, value}, adapter)
-  end
-
   def adapter_load(adapter, type, value) do
     if of_base_type?(type, value) do
       {:ok, value}
@@ -942,10 +936,6 @@ defmodule Ecto.Type do
     do: acc
 
   @doc false
-  def adapter_dump(adapter, {:parameterized, module, params} = type, value) do
-    process_dumpers(adapter.dumpers(module.type(params), type), {:ok, value}, adapter)
-  end
-
   def adapter_dump(adapter, type, value) do
     process_dumpers(adapter.dumpers(type(type), type), {:ok, value}, adapter)
   end
