@@ -1095,9 +1095,11 @@ defmodule Ecto.Query.Planner do
   defp source_cache(%{source: {bin, schema}, prefix: prefix}, params),
     do: {{bin, schema, schema.__schema__(:hash), prefix}, params}
 
-  defp source_cache(%{source: {kind, _, _} = source, prefix: prefix}, params)
-       when kind in [:fragment, :values],
-       do: {{source, prefix}, params}
+  defp source_cache(%{source: {:fragment, _, _} = source, prefix: prefix}, params),
+    do: {{source, prefix}, params}
+
+  defp source_cache(%{source: {:values, _, _}}, params),
+    do: {:nocache, params}
 
   defp source_cache(%{source: %Ecto.SubQuery{params: inner, cache: key}}, params),
     do: {key, Enum.reverse(inner, params)}
@@ -2195,7 +2197,7 @@ defmodule Ecto.Query.Planner do
         {{:source, {source, schema}, prefix || query.prefix, types}, fields}
 
       {{:ok, {_, fields}}, _} ->
-        {{:map, Enum.map(fields, &{&1, {:value, :any}})}, Enum.map(fields, &select_field(&1, ix))}
+        {{:map, Enum.map(fields, &{&1, {:value, :any}})}, Enum.map(fields, &select_field(&1, ix, false))}
 
       {:error, {:fragment, _, _}} ->
         {{:value, :map}, [{:&, [], [ix]}]}
@@ -2222,7 +2224,7 @@ defmodule Ecto.Query.Planner do
 
       {:error, %Ecto.SubQuery{select: select}} ->
         fields = subquery_source_fields(select)
-        {select, Enum.map(fields, &select_field(&1, ix))}
+        {select, Enum.map(fields, &select_field(&1, ix, false))}
     end
   end
 
@@ -2231,16 +2233,16 @@ defmodule Ecto.Query.Planner do
     |> Enum.reverse()
     |> Enum.reduce({[], []}, fn
       field, {types, exprs} when is_atom(field) and not is_map_key(drop, field) ->
-        {source, type, _read_only?} = Map.get(dumper, field, {field, :any, false})
-        {[{field, type} | types], [select_field(source, ix) | exprs]}
+        {source, type, read_only?} = Map.get(dumper, field, {field, :any, false})
+        {[{field, type} | types], [select_field(source, ix, read_only?) | exprs]}
 
       _field, acc ->
         acc
     end)
   end
 
-  defp select_field(field, ix) do
-    {{:., [], [{:&, [], [ix]}, field]}, [], []}
+  defp select_field(field, ix, read_only?) do
+    {{:., [read_only: read_only?], [{:&, [], [ix]}, field]}, [], []}
   end
 
   defp get_ix!({:&, _, [ix]} = expr, _kind, query) do
