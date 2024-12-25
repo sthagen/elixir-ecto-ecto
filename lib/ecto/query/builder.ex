@@ -360,7 +360,7 @@ defmodule Ecto.Query.Builder do
 
     if is_nil(left) or is_nil(right) do
       error!(
-        "comparison with nil is forbidden as it is unsafe. " <>
+        "comparison with nil in `#{Macro.to_string(expr)}` is forbidden as it is unsafe. " <>
           "If you want to check if a value is nil, use is_nil/1 instead"
       )
     end
@@ -368,11 +368,17 @@ defmodule Ecto.Query.Builder do
     ltype = quoted_type(right, vars)
     rtype = quoted_type(left, vars)
 
-    {left, params_acc} = escape(left, ltype, params_acc, vars, env)
-    {right, params_acc} = escape(right, rtype, params_acc, vars, env)
+    {escaped_left, params_acc} = escape(left, ltype, params_acc, vars, env)
+    {escaped_right, params_acc} = escape(right, rtype, params_acc, vars, env)
 
     {params, acc} = params_acc
-    {{:{}, [], [comp_op, [], [left, right]]}, {params |> wrap_nil(left) |> wrap_nil(right), acc}}
+
+    params =
+      params
+      |> wrap_nil(escaped_left, Macro.to_string(right))
+      |> wrap_nil(escaped_right, Macro.to_string(left))
+
+    {{:{}, [], [comp_op, [], [escaped_left, escaped_right]]}, {params, acc}}
   end
 
   # mathematical operators
@@ -585,18 +591,18 @@ defmodule Ecto.Query.Builder do
   defp validate_json_field!(unsupported_field),
     do: error!("`#{Macro.to_string(unsupported_field)}` is not a valid json field")
 
-  defp wrap_nil(params, {:{}, _, [:^, _, [ix]]}),
-    do: wrap_nil(params, length(params) - ix - 1, [])
+  defp wrap_nil(params, {:{}, _, [:^, _, [ix]]}, compare_str),
+    do: wrap_nil(params, length(params) - ix - 1, compare_str, [])
 
-  defp wrap_nil(params, _other), do: params
+  defp wrap_nil(params, _other, _compare_str), do: params
 
-  defp wrap_nil([{val, type} | params], 0, acc) do
-    val = quote do: Ecto.Query.Builder.not_nil!(unquote(val))
+  defp wrap_nil([{val, type} | params], 0, compare_str, acc) do
+    val = quote do: Ecto.Query.Builder.not_nil!(unquote(val), unquote(compare_str))
     Enum.reverse(acc, [{val, type} | params])
   end
 
-  defp wrap_nil([pair | params], i, acc) do
-    wrap_nil(params, i - 1, [pair | acc])
+  defp wrap_nil([pair | params], i, compare_str, acc) do
+    wrap_nil(params, i - 1, compare_str, [pair | acc])
   end
 
   defp expand_and_split_fragment(query, env) do
@@ -691,7 +697,7 @@ defmodule Ecto.Query.Builder do
   defp escape_field!({var, _, context}, field, vars)
        when is_atom(var) and is_atom(context) do
     var = escape_var!(var, vars)
-    field = quoted_atom!(field, "field/2")
+    field = quoted_atom_or_string!(field, "field/2")
     dot = {:{}, [], [:., [], [var, field]]}
     {:{}, [], [dot, [], []]}
   end
@@ -700,7 +706,7 @@ defmodule Ecto.Query.Builder do
        when kind in [:as, :parent_as] do
     value = late_binding!(kind, value)
     as = {:{}, [], [kind, [], [value]]}
-    field = quoted_atom!(field, "field/2")
+    field = quoted_atom_or_string!(field, "field/2")
     dot = {:{}, [], [:., [], [as, field]]}
     {:{}, [], [dot, [], []]}
   end
@@ -844,9 +850,8 @@ defmodule Ecto.Query.Builder do
       do: {find_var!(var, vars), field}
 
   def validate_type!({:field, _, [{var, _, context}, field]}, vars, _env)
-      when is_atom(var) and is_atom(context) and is_atom(field),
-      do: {find_var!(var, vars), field}
-
+    when is_atom(var) and is_atom(context) and (is_atom(field) or is_binary(field)),
+    do: {find_var!(var, vars), field}
   def validate_type!({:field, _, [{var, _, context}, {:^, _, [field]}]}, vars, _env)
       when is_atom(var) and is_atom(context),
       do: {find_var!(var, vars), field}
@@ -1105,6 +1110,27 @@ defmodule Ecto.Query.Builder do
       )
 
   @doc """
+  Checks if the field is an atom or string at compilation time or
+  delegate the check to runtime for interpolation.
+  """
+  def quoted_atom_or_string!({:^, _, [expr]}, used_ref),
+    do: quote(do: Ecto.Query.Builder.atom_or_string!(unquote(expr), unquote(used_ref)))
+
+  def quoted_atom_or_string!(atom, _used_ref) when is_atom(atom),
+    do: atom
+
+  def quoted_atom_or_string!(string, _used_ref) when is_binary(string),
+    do: string
+
+  def quoted_atom_or_string!(other, used_ref),
+    do:
+      error!(
+        "expected literal atom or string or interpolated value in #{used_ref}, got: " <>
+        "`#{Macro.to_string(other)}`"
+      )
+
+
+  @doc """
   Called by escaper at runtime to verify that value is an atom.
   """
   def atom!(atom, _used_ref) when is_atom(atom),
@@ -1112,6 +1138,18 @@ defmodule Ecto.Query.Builder do
 
   def atom!(other, used_ref),
     do: error!("expected atom in #{used_ref}, got: `#{inspect(other)}`")
+
+  @doc """
+  Called by escaper at runtime to verify that value is an atom or string.
+  """
+  def atom_or_string!(atom, _used_ref) when is_atom(atom),
+    do: atom
+
+  def atom_or_string!(string, _used_ref) when is_binary(string),
+    do: string
+
+  def atom_or_string!(other, used_ref),
+    do: error!("expected atom or string in #{used_ref}, got: `#{inspect other}`")
 
   @doc """
   Checks if the value of a late binding is an interpolation or
@@ -1184,13 +1222,13 @@ defmodule Ecto.Query.Builder do
   @doc """
   Called by escaper at runtime to verify that a value is not nil.
   """
-  def not_nil!(nil) do
+  def not_nil!(nil, compare_str) do
     raise ArgumentError,
-          "comparison with nil is forbidden as it is unsafe. " <>
+          "comparing `#{compare_str}` with `nil` is forbidden as it is unsafe. " <>
             "If you want to check if a value is nil, use is_nil/1 instead"
   end
 
-  def not_nil!(not_nil) do
+  def not_nil!(not_nil, _compare_str) do
     not_nil
   end
 
@@ -1278,11 +1316,11 @@ defmodule Ecto.Query.Builder do
   end
 
   def quoted_type({:field, _, [{var, _, context}, field]}, vars)
-      when is_atom(var) and is_atom(context) and is_atom(field),
-      do: {find_var!(var, vars), field}
+    when is_atom(var) and is_atom(context) and (is_atom(field) or is_binary(field)),
+    do: {find_var!(var, vars), field}
 
   def quoted_type({:field, _, [{kind, _, [value]}, field]}, _vars)
-      when kind in [:as, :parent_as] and is_atom(field) do
+      when kind in [:as, :parent_as] and (is_atom(field) or is_binary(field)) do
     value = late_binding!(kind, value)
     {{:{}, [], [kind, [], [value]]}, field}
   end
