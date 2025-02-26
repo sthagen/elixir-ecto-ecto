@@ -1,30 +1,66 @@
 defmodule Ecto.Changeset do
   @moduledoc ~S"""
-  Changesets allow filtering, casting, validation and
-  definition of constraints when manipulating structs.
+  Changesets allow filtering, type casting, validation, and
+  constraints when manipulating structs, usually in preparation
+  for inserting and updating entries into a database.
 
-  There is an example of working with changesets in the introductory
-  documentation in the `Ecto` module. The functions `cast/4` and
-  `change/2` are the usual entry points for creating changesets.
-  The first one is used to cast and validate external parameters,
-  such as parameters sent through a form, API, command line, etc.
-  The second one is used to change data directly from your application.
+  Let's break down what those features mean. Imagine the common
+  scenario where you want to receive data from a user submitted
+  web form to create or update entries in the database. Once you
+  receive this data on the server, changesets will help you perform
+  the following actions:
 
-  The remaining functions in this module, such as validations,
-  constraints, association handling, are about manipulating
+    * **filtering** - because you are receiving external data from
+      a third-party, you must explicitly list which data you accept.
+      For example, you most likely don't want to allow a user to set
+      its own "is_admin" field to true
+    
+    * **type casting** - a web form sends most of its data as strings.
+      When the user types the number "100", Ecto will receive it as
+      as the string "100", which must then be converted to 100.
+      Changesets are responsible for converting these values to the
+      types defined in your `Ecto.Schema`, support even complex types
+      such as datetimes
+
+    * **validations** - the data the user submits may not correct.
+      For example, the user may type an invalid email address, with
+      a trailing dot. Or say the date for a future meeting would
+      happen in the last year. You must validate the data and give
+      feedback to the user
+
+    * **constraints** - some validations can only happen with the
+      help of the database. For example, in order to know if a user
+      email is already taken or not, you must query the database.
+      Constraints help you do that in a way that respects data
+      integrity
+
+  Although we have used a web form as an example, changesets can be used
+  for APIs and many other scenarios. Changesets may also be used to work
+  with data even if it won't be written to a database. We will cover
+  these scenarios in the documentation below. There is also an introductory
+  example of working with changesets and how it relates to schemas and
+  repositories [in the `Ecto` module](`Ecto#module-changesets`).
+
+  In a nutshell, there are two main functions for creating a changeset.
+  The `cast/4` function is used to receive external parameters from a
+  form, API or command line, and convert them to the types defined in
+  your `Ecto.Schema`. `change/2` is used to modify data directly from
+  your application, assuming the data given is valid and matches the
+  existing types. The remaining functions in this module, such as
+  validations, constraints, association handling, are about manipulating
   changesets.
 
   ## External vs internal data
 
   Changesets allow working with two kinds of data:
 
+    * external to the application - for example user input from
+      a form that needs to be type-converted and properly validated. This
+      use case is primarily covered by the `cast/4` function.
+
     * internal to the application - for example programmatically generated,
       or coming from other subsystems. This use case is primarily covered
       by the `change/2` and `put_change/3` functions.
-
-    * external to the application - for example data provided by the user in
-      a form that needs to be type-converted and properly validated. This
-      use case is primarily covered by the `cast/4` function.
 
   When working with external data, the data is typically provided
   as maps with string keys (also known as parameters). On the other hand,
@@ -147,8 +183,8 @@ defmodule Ecto.Changeset do
 
   ## Associations, embeds, and on replace
 
-  Using changesets you can work with associations as well as with embedded
-  structs. There are two primary APIs:
+  Using changesets you can work with associations as well as with
+  [embedded](embedded-schemas.html) structs. There are two primary APIs:
 
     * `cast_assoc/3` and `cast_embed/3` - those functions are used when
       working with external data. In particular, they allow you to change
