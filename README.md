@@ -125,6 +125,20 @@ defmodule MyApp.Repo do
   ...
 ```
 
+### IPv6 support
+
+If your database's host resolves to ipv6 address you should
+add `socket_options: [:inet6]` to configuration block like below:
+
+```elixir
+import Mix.Config
+
+config :my_app, MyApp.Repo,
+  hostname: "db12.dc0.comp.any",
+  socket_options: [:inet6],
+  ...
+```
+
 ## Supported Versions
 
 | Branch            | Support                  |

@@ -708,9 +708,9 @@ changeset = Friends.Person.changeset(person, %{first_name: ""})
 Friends.Repo.update(changeset)
 #=> {:error,
      #Ecto.Changeset<
-       action: :update, 
+       action: :update,
        changes: %{},
-       errors: [first_name: {"can't be blank", [validation: :required]}], 
+       errors: [first_name: {"can't be blank", [validation: :required]}],
        data: #Friends.Person<>,
        valid?: false
      >}
