@@ -2,7 +2,7 @@ defmodule Ecto.MixProject do
   use Mix.Project
 
   @source_url "https://github.com/elixir-ecto/ecto"
-  @version "3.13.2"
+  @version "3.13.3"
 
   def project do
     [
@@ -35,7 +35,7 @@ defmodule Ecto.MixProject do
       {:telemetry, "~> 0.4 or ~> 1.0"},
       {:decimal, "~> 2.0"},
       {:jason, "~> 1.0", optional: true},
-      {:ex_doc, github: "elixir-lang/ex_doc", only: :docs}
+      {:ex_doc, "~> 0.38", only: :docs}
     ]
   end
 
