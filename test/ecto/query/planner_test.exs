@@ -173,6 +173,12 @@ defmodule Ecto.Query.PlannerTest do
     {query, cast_params, dump_params, select}
   end
 
+  defp flatten_boolean({op, _, [left, right]}, op) do
+    flatten_boolean(left, op) ++ flatten_boolean(right, op)
+  end
+
+  defp flatten_boolean(expr, _op), do: [expr]
+
   defp select_fields(fields, ix) do
     for field <- fields do
       {{:., [writable: :always], [{:&, [], [ix]}, field]}, [], []}
@@ -988,6 +994,26 @@ defmodule Ecto.Query.PlannerTest do
            ] = cache_key
   end
 
+  test "plan: tuple source with fragment numbers later placeholders after the source" do
+    good_query =
+      from(f in fragment("some_sql_function(?)", ^"value"),
+        where: f.visits in ^[1, 2],
+        select: f
+      )
+      |> normalize()
+
+    assert Macro.to_string(hd(good_query.wheres).expr) == "&0.visits() in ^(1, 2)"
+
+    bad_query =
+      from(f in {fragment("some_sql_function(?)", ^"value"), Post},
+        where: f.visits in ^[1, 2],
+        select: f
+      )
+      |> normalize()
+
+    assert Macro.to_string(hd(bad_query.wheres).expr) == "&0.visits() in ^(1, 2)"
+  end
+
   describe "plan: CTEs" do
     test "with uncacheable queries are uncacheable" do
       {_, _, _, cache} =
@@ -1088,6 +1114,93 @@ defmodule Ecto.Query.PlannerTest do
                {:order_by, [[desc: _]]},
                {:from, {"comments", Comment, _, nil}, []},
                {:select, {:&, [], [0]}}
+             ] = cte_cache
+    end
+
+    test "on update_all with data-modifying CTE" do
+      update_comments =
+        from(c in Comment,
+          where: c.id == ^10,
+          update: [set: [text: ^"Root"]],
+          select: c.id
+        )
+
+      {_, ["Root", 10], ["Root", 10], cache} =
+        "updated_comments"
+        |> with_cte("updated_comments", as: ^update_comments, operation: :update_all)
+        |> select([c], c.id)
+        |> plan()
+
+      assert [
+               :all,
+               {:from, {{"updated_comments", nil}, nil}, []},
+               {:select, {{:., [], [{:&, [], [0]}, :id]}, [], []}},
+               {:non_recursive_cte, "updated_comments", nil, :update_all, cte_cache}
+             ] = cache
+
+      assert [
+               :update_all,
+               {:select, {{:., [], [{:&, [], [0]}, :id]}, [], []}},
+               {:where, _},
+               {:update, [[set: [text: {:^, [], [0]}]]]},
+               {:from, {"comments", Comment, _, nil}, []}
+             ] = cte_cache
+    end
+
+    test "on update_all with data-modifying CTE keeps update expressions in cache key" do
+      update_comments_1 =
+        from(c in Comment,
+          update: [set: [visits: 1]],
+          select: c.id
+        )
+
+      update_comments_2 =
+        from(c in Comment,
+          update: [set: [visits: 2]],
+          select: c.id
+        )
+
+      {_, _, _, cache_1} =
+        "updated_comments"
+        |> with_cte("updated_comments", as: ^update_comments_1, operation: :update_all)
+        |> select([c], c.id)
+        |> plan()
+
+      {_, _, _, cache_2} =
+        "updated_comments"
+        |> with_cte("updated_comments", as: ^update_comments_2, operation: :update_all)
+        |> select([c], c.id)
+        |> plan()
+
+      assert cache_1 != cache_2
+    end
+
+    test "on delete_all with data-modifying CTE keeps params in delete order" do
+      delete_comments =
+        from(c in "comments",
+          where: c.id == ^10,
+          select: %{id: c.id, text: ^"deleted"}
+        )
+
+      {_, [10, "deleted"], [10, "deleted"], cache} =
+        "deleted_comments"
+        |> with_cte("deleted_comments", as: ^delete_comments, operation: :delete_all)
+        |> select([c], c.id)
+        |> plan()
+
+      assert [
+               :all,
+               {:from, {{"deleted_comments", nil}, nil}, []},
+               {:select, {{:., [], [{:&, [], [0]}, :id]}, [], []}},
+               {:non_recursive_cte, "deleted_comments", nil, :delete_all, cte_cache}
+             ] = cache
+
+      assert [
+               :delete_all,
+               {:select,
+                {:%{}, [], [id: {{:., [], [{:&, [], [0]}, :id]}, [], []}, text: {:^, [], [0]}]}},
+               {:where, _},
+               {:from, {{"comments", nil}, nil}, []}
              ] = cte_cache
     end
 
@@ -1961,6 +2074,54 @@ defmodule Ecto.Query.PlannerTest do
              {:expr, {:^, _, [3]}},
              _
            ] = parts
+  end
+
+  test "normalize: params around splicing inside dynamic" do
+    list = [1, 2, 3]
+    ids = [10, 11]
+
+    dynamic =
+      dynamic(
+        [p],
+        p.title == ^"a" and fragment("? = ANY(?)", p.id, splice(^list)) and
+          p.visits > ^1 and fragment("? = ANY(?)", p.id, splice(^ids))
+      )
+
+    {query, cast_params, dump_params, _} =
+      from(p in Post, select: p.id)
+      |> where(^dynamic)
+      |> normalize_with_params()
+
+    assert cast_params == ["a", 1, 2, 3, 1, 10, 11]
+    assert dump_params == ["a", 1, 2, 3, 1, 10, 11]
+
+    [title_expr, {:fragment, _, first_fragment}, visits_expr, {:fragment, _, second_fragment}] =
+      flatten_boolean(hd(query.wheres).expr, :and)
+
+    assert Macro.to_string(title_expr) == "&0.post_title() == ^0"
+    assert Macro.to_string(visits_expr) == "&0.visits() > ^4"
+
+    assert [
+             _,
+             {:expr, {{:., _, [{:&, _, [0]}, :id]}, _, []}},
+             _,
+             {:expr, {:^, _, [1]}},
+             _,
+             {:expr, {:^, _, [2]}},
+             _,
+             {:expr, {:^, _, [3]}},
+             _
+           ] = first_fragment
+
+    assert [
+             _,
+             {:expr, {{:., _, [{:&, _, [0]}, :id]}, _, []}},
+             _,
+             {:expr, {:^, _, [5]}},
+             _,
+             {:expr, {:^, _, [6]}},
+             _
+           ] = second_fragment
   end
 
   test "normalize: from values list" do
