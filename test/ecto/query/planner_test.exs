@@ -2502,6 +2502,12 @@ defmodule Ecto.Query.PlannerTest do
                  end
   end
 
+  test "normalize: select source on fragment with columns" do
+    query = from f in fragment("select 1", columns: [:x])
+    {_, _, _, select} = normalize_with_params(query)
+    assert %{from: {_, {:map, [x: {:value, :any}]}}} = select
+  end
+
   test "normalize: select with map/2" do
     query = Post |> select([p], map(p, [:id, :title])) |> normalize()
     assert query.select.expr == {:&, [], [0]}
@@ -2669,6 +2675,81 @@ defmodule Ecto.Query.PlannerTest do
                0
              ) ++
                select_fields([:id, :posted, :uuid, :crazy_comment, :post_id, :crazy_post_id], 1)
+  end
+
+  test "normalize: map update does not drop fields from another full source reference" do
+    fields =
+      select_fields(
+        [
+          :id,
+          :post_title,
+          :text,
+          :code,
+          :posted,
+          :visits,
+          :links,
+          :preferences,
+          :status,
+          :parameterized_map,
+          :meta,
+          :metas
+        ],
+        0
+      )
+
+    query = Post |> select([p], {%{p | title: nil}, p}) |> normalize()
+    assert query.select.fields == fields
+
+    query = Post |> select([p], {p, %{p | title: nil}}) |> normalize()
+    assert query.select.fields == fields
+  end
+
+  test "normalize: map updates only drop fields overwritten by every source reference" do
+    query =
+      Post
+      |> select([p], {%{p | title: nil}, %{p | title: nil, posted: nil}})
+      |> normalize()
+
+    assert query.select.fields ==
+             select_fields(
+               [
+                 :id,
+                 :text,
+                 :code,
+                 :posted,
+                 :visits,
+                 :links,
+                 :preferences,
+                 :status,
+                 :parameterized_map,
+                 :meta,
+                 :metas
+               ],
+               0
+             )
+  end
+
+  test "normalize: struct update does not drop fields from another full source reference" do
+    query = Post |> select([p], {%Post{p | title: nil}, p}) |> normalize()
+
+    assert query.select.fields ==
+             select_fields(
+               [
+                 :id,
+                 :post_title,
+                 :text,
+                 :code,
+                 :posted,
+                 :visits,
+                 :links,
+                 :preferences,
+                 :status,
+                 :parameterized_map,
+                 :meta,
+                 :metas
+               ],
+               0
+             )
   end
 
   test "normalize: select single dynamic value interpolated at root level" do

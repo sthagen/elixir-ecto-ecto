@@ -581,6 +581,8 @@ defmodule Ecto.Changeset do
     end
   end
 
+  defp relation_changed?(:one, nil), do: true
+
   defp relation_changed?(:one, changeset) do
     changeset.action != :update or changeset.changes != %{}
   end
@@ -4323,11 +4325,13 @@ defmodule Ecto.Changeset do
 
     acc = Map.put(acc, key, relation_changed)
 
-    with %Ecto.Association.BelongsTo{related_key: related_key} <- relation,
-         %{^related_key => id} <- relation_changed do
-      Map.put(acc, relation.owner_key, id)
-    else
-      _ -> acc
+    case relation do
+      %Ecto.Association.BelongsTo{related_key: related_key, owner_key: owner_key} ->
+        id = relation_changed && Map.fetch!(relation_changed, related_key)
+        Map.put(acc, owner_key, id)
+
+      _ ->
+        acc
     end
   end
 

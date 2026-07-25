@@ -1282,8 +1282,11 @@ defmodule Ecto.Query.Planner do
     error!(query, "queries that do not have a schema need to explicitly pass a :select clause")
   end
 
-  def ensure_select(%{select: nil, from: %{source: {:fragment, _, _}}} = query, true) do
-    error!(query, "queries from a fragment need to explicitly pass a :select clause")
+  def ensure_select(%{select: nil, from: %{source: {:fragment, [], _}}} = query, true) do
+    error!(
+      query,
+      "queries from a fragment need to explicitly pass a :select clause or use the `:columns` option"
+    )
   end
 
   def ensure_select(%{select: nil} = query, true) do
@@ -1785,7 +1788,7 @@ defmodule Ecto.Query.Planner do
 
     {fields, preprocess, from} =
       case from do
-        {from_expr, from_source, from_fields} ->
+        {from_expr, from_source, from_fields, _drop} ->
           {assoc_exprs, assoc_fields} = collect_assocs([], [], query, tag, from_take, assocs)
           fields = from_fields ++ Enum.reverse(assoc_fields, Enum.reverse(fields))
           preprocess = [from_expr | Enum.reverse(assoc_exprs)]
@@ -1831,13 +1834,14 @@ defmodule Ecto.Query.Planner do
        ) do
     case collect_fields(left, fields, from, query, take, keep_literals?, %{}) do
       {{:source, :from}, fields, left_from} ->
-        {right, right_fields, _} =
+        {right, right_fields, right_from} =
           collect_fields(right, [], left_from, query, take, keep_literals?, %{})
 
-        {from_expr, from_source, from_fields} = left_from
+        {from_expr, from_source, from_fields, drop} = right_from
 
         from =
-          {{:merge, from_expr, right}, from_source, from_fields ++ Enum.reverse(right_fields)}
+          {{:merge, from_expr, right}, from_source, from_fields ++ Enum.reverse(right_fields),
+           drop}
 
         {{:source, :from}, fields, from}
 
@@ -1851,10 +1855,30 @@ defmodule Ecto.Query.Planner do
 
   defp collect_fields({:&, _, [0]}, fields, :none, query, take, _keep_literals?, drop) do
     {expr, taken} = source_take!(:select, query, take, 0, 0, drop)
-    {{:source, :from}, fields, {{:source, :from}, expr, taken}}
+    {{:source, :from}, fields, {{:source, :from}, expr, taken, drop}}
   end
 
-  defp collect_fields({:&, _, [0]}, fields, from, _query, _take, _keep_literals?, _drop) do
+  defp collect_fields(
+         {:&, _, [0]},
+         fields,
+         {from_expr, _, _, cached_drop} = from,
+         query,
+         take,
+         _keep_literals?,
+         drop
+       ) do
+    # All references to the from binding share this source, so a field can only
+    # be dropped when every full-source reference overwrites it.
+    drop = Map.take(cached_drop, Map.keys(drop))
+
+    from =
+      if drop == cached_drop do
+        from
+      else
+        {from_source, from_fields} = source_take!(:select, query, take, 0, 0, drop)
+        {from_expr, from_source, from_fields, drop}
+      end
+
     {{:source, :from}, fields, from}
   end
 
@@ -2227,8 +2251,13 @@ defmodule Ecto.Query.Planner do
         {{:map, Enum.map(fields, &{&1, {:value, :any}})},
          Enum.map(fields, &select_field(&1, ix, :always))}
 
-      {:error, {:fragment, _, _}} ->
-        {{:value, :map}, [{:&, [], [ix]}]}
+      {:error, {:fragment, meta, _}} ->
+        if columns = meta[:column_names] do
+          {{:map, Enum.map(columns, &{&1, {:value, :any}})},
+           Enum.map(columns, &select_field(&1, ix, :always))}
+        else
+          {{:value, :map}, [{:&, [], [ix]}]}
+        end
 
       {:error, {:values, _, [types, _]}} ->
         fields = Keyword.keys(types)
