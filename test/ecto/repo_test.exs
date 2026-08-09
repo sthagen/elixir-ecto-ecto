@@ -2382,6 +2382,23 @@ defmodule Ecto.RepoTest do
       assert_received {:callback_ran, pid2} when pid2 != self()
       assert pid1 != pid2
     end
+
+    # Logger.{put,get,delete}_process_level were added in Elixir 1.15.
+    if Version.match?(System.version(), ">= 1.15.0") do
+      test "preload tasks inherit the caller's Logger level" do
+        Logger.put_process_level(self(), :warning)
+        on_exit(fn -> Logger.delete_process_level(self()) end)
+
+        test_process = self()
+        fun = fn -> send(test_process, {:level, Logger.get_process_level(self())}) end
+
+        %MySchemaWithMultiAssoc{parent_id: 1, mother_id: 2}
+        |> PrepareRepo.preload([:parent, :mother], on_preloader_spawn: fun)
+
+        assert_received {:level, :warning}
+        assert_received {:level, :warning}
+      end
+    end
   end
 
   describe "prepare_transaction" do
@@ -2502,6 +2519,28 @@ defmodule Ecto.RepoTest do
       |> TestRepo.update!()
 
       assert_received {:update, %{changes: [always: 12]}}
+    end
+
+    test "update enforces writable fields added by prepare_changes" do
+      %{always: 10, never: nil} =
+        %MySchemaWritable{id: 1}
+        |> Ecto.Changeset.change(%{always: 10})
+        |> Ecto.Changeset.prepare_changes(&Ecto.Changeset.put_change(&1, :never, 11))
+        |> TestRepo.update!()
+
+      assert_received {:update, %{changes: [always: 10]}}
+
+      message = ~r"""
+      you are attempting to write to the field :never of #{inspect(__MODULE__.MySchemaWritableRaise)} but
+      the `:writable` option of this field indicates the field should not be written to during an update.
+      """
+
+      assert_raise ArgumentError, message, fn ->
+        %MySchemaWritableRaise{id: 2}
+        |> Ecto.Changeset.change(%{always: 12})
+        |> Ecto.Changeset.prepare_changes(&Ecto.Changeset.put_change(&1, :never, 13))
+        |> TestRepo.update!()
+      end
     end
 
     test "update is a no-op when updatable fields are not changed" do
@@ -2635,6 +2674,29 @@ defmodule Ecto.RepoTest do
 
       assert_received {:insert, %{fields: inserted_fields}}
       assert Enum.sort(inserted_fields) == [always: 12, id: 2, insert: 11]
+    end
+
+    test "insert enforces writable fields added by prepare_changes" do
+      %{always: 10, never: nil} =
+        %MySchemaWritable{id: 1}
+        |> Ecto.Changeset.change(%{always: 10})
+        |> Ecto.Changeset.prepare_changes(&Ecto.Changeset.put_change(&1, :never, 11))
+        |> TestRepo.insert!()
+
+      assert_received {:insert, %{fields: inserted_fields}}
+      assert Enum.sort(inserted_fields) == [always: 10, id: 1]
+
+      message = ~r"""
+      you are attempting to write to the field :never of #{inspect(__MODULE__.MySchemaWritableRaise)} but
+      the `:writable` option of this field indicates the field should not be written to during an insert.
+      """
+
+      assert_raise ArgumentError, message, fn ->
+        %MySchemaWritableRaise{id: 2}
+        |> Ecto.Changeset.change(%{always: 12})
+        |> Ecto.Changeset.prepare_changes(&Ecto.Changeset.put_change(&1, :never, 13))
+        |> TestRepo.insert!()
+      end
     end
 
     test "insert with returning" do
