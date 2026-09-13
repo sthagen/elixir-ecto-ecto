@@ -1632,12 +1632,6 @@ defmodule Ecto.ChangesetTest do
            ]
 
     changeset = changeset(%{"title" => "\u0065\u0301"}) |> validate_length(:title, max: 1)
-    assert changeset.valid?
-
-    changeset =
-      changeset(%{"title" => "\u0065\u0301"})
-      |> validate_length(:title, max: 1, count: :codepoints)
-
     refute changeset.valid?
 
     assert changeset.errors == [
@@ -1645,6 +1639,13 @@ defmodule Ecto.ChangesetTest do
                {"should be at most %{count} character(s)",
                 count: 1, validation: :length, kind: :max, type: :string}
            ]
+
+    changeset =
+      changeset(%{"title" => "\u0065\u0301"})
+      |> validate_length(:title, max: 1, count: :graphemes)
+
+    assert changeset.valid?
+    assert changeset.errors == []
   end
 
   test "validate_length/3 with binary" do

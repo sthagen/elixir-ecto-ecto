@@ -565,18 +565,29 @@ defmodule Ecto.RepoTest do
                "#Ecto.Query<from m0 in Ecto.RepoTest.MySchema, order_by: [asc: m0.id], limit: 1, select: 1>"
     end
 
-    test "overrides any select" do
+    test "overrides any select without combinations" do
       from(MySchema, select: true) |> TestRepo.exists?()
       assert_received {:all, query}
 
       assert inspect(query) ==
                "#Ecto.Query<from m0 in Ecto.RepoTest.MySchema, limit: 1, select: 1>"
+    end
 
-      from(MySchema, union: ^from(MySchema, select: true)) |> TestRepo.exists?()
-      assert_received {:all, query}
+    test "wraps combinations in a subquery before overriding the select" do
+      query = from(m in MySchema, select: m.id, distinct: true)
+      combination = from(m in MySchema, select: m.id)
 
-      assert inspect(query) ==
-               "#Ecto.Query<from m0 in Ecto.RepoTest.MySchema, union: (from m0 in Ecto.RepoTest.MySchema,\n  select: 1), limit: 1, select: 1>"
+      for type <- [:union, :union_all, :except, :except_all, :intersect, :intersect_all] do
+        TestRepo.exists?(%{query | combinations: [{type, combination}]})
+        assert_received {:all, exists_query}
+
+        assert %{from: %{source: %Ecto.SubQuery{query: inner_query}}, combinations: []} = exists_query
+        assert %{select: %{expr: 1}, limit: %{expr: 1}, distinct: nil} = exists_query
+        assert [{^type, inner_combination}] = inner_query.combinations
+        assert inner_query.select.expr != 1
+        assert inner_query.distinct != nil
+        assert inner_combination.select.expr != 1
+      end
     end
   end
 

@@ -4,6 +4,7 @@
 
 ### Enhancements
 
+  * [Ecto.Changeset] Make `validate_length/3` count codepoints by default, aligning it with how databases typically enforce string length limits
   * [Ecto.Query] Allow assigning column names to fragment sources
 
 ### Bug fixes

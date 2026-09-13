@@ -3044,21 +3044,22 @@ defmodule Ecto.Changeset do
   @doc """
   Validates a change is a string or list of the given length.
 
-  Note that the length of a string is counted in graphemes by default. If using
-  this validation to match a character limit of a database backend,
-  it's likely that the limit ignores graphemes and limits the number
-  of unicode characters. Then consider using the `:count` option to
-  limit the number of codepoints (`:codepoints`), or limit the number of bytes (`:bytes`).
-
   The validation only runs if a change for the given `field` exists and the
   change value is not `nil`.
+
+  > #### Counting characters {: .info}
+  >
+  > The length of a string is counted in codepoints by default since v3.15.0,
+  > aligning the validation with how databases typically enforce length limits.
+  > Use the `:count` option to count graphemes (`:graphemes`) or bytes (`:bytes`)
+  > instead.
 
   ## Options
 
     * `:is` - the length must be exactly this value
     * `:min` - the length must be greater than or equal to this value
     * `:max` - the length must be less than or equal to this value
-    * `:count` - what length to count for string, `:graphemes` (default), `:codepoints` or `:bytes`
+    * `:count` - what length to count for string, `:codepoints` (default), `:graphemes` or `:bytes`
     * `:message` - the message on failure, depending on the validation, is one of:
       * for strings:
         * "should be %{count} character(s)"
@@ -3089,7 +3090,7 @@ defmodule Ecto.Changeset do
   def validate_length(changeset, field, opts) when is_list(opts) do
     validate_change(changeset, field, {:length, opts}, fn
       _, value ->
-        count_type = opts[:count] || :graphemes
+        count_type = opts[:count] || :codepoints
 
         {type, length} =
           case {value, count_type} do

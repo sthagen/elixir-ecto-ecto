@@ -140,12 +140,12 @@ defmodule Ecto.Repo.Queryable do
 
   def exists?(name, queryable, opts) do
     queryable =
-      Query.exclude(queryable, :select)
-      |> Query.exclude(:preload)
+      Query.exclude(queryable, :preload)
+      |> rewrite_combinations()
+      |> Query.exclude(:select)
       |> Query.exclude(:distinct)
       |> Query.select(1)
       |> Query.limit(1)
-      |> rewrite_combinations()
 
     case all(name, queryable, opts) do
       [1] -> true
@@ -155,13 +155,10 @@ defmodule Ecto.Repo.Queryable do
 
   defp rewrite_combinations(%{combinations: []} = query), do: query
 
-  defp rewrite_combinations(%{combinations: combinations} = query) do
-    combinations =
-      Enum.map(combinations, fn {type, query} ->
-        {type, query |> Query.exclude(:select) |> Query.select(1)}
-      end)
-
-    %{query | combinations: combinations}
+  defp rewrite_combinations(query) do
+    query
+    |> Query.subquery()
+    |> Queryable.Ecto.SubQuery.to_query()
   end
 
   def one(name, queryable, tuplet) do
